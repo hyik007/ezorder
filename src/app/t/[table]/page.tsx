@@ -1,964 +1,7 @@
-"use client";
-
-import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
-import { formatRM } from "@/lib/menu";
-import { store } from "@/lib/store";
-import type { MenuItem } from "@/lib/types";
-
-type Lang = "en" | "ms" | "zh";
-type ViewMode = "choose" | "big" | "normal";
-
-const UI_TEXT: Record<
-  Lang,
-  {
-    dishOf: (i: number, total: number) => string;
-    iWantThis: string;
-    added: string;
-    undo: string;
-    back: string;
-    nextDish: string;
-    myPicks: string;
-    sayOrder: string;
-    listening: string;
-    stopAndMatch: string;
-    cancel: string;
-    switchBig: string;
-    tableOrder: string;
-    emptyPicks: string;
-    close: string;
-    soldOut: string;
-    soldOutTryThese: string;
-    didYouMean: string;
-    chooseFromPhotos: string;
-  }
-> = {
-  en: {
-    dishOf: (i, total) => `Dish ${i} of ${total}`,
-    iWantThis: "✓ I want this",
-    added: "✓ Added to your picks!",
-    undo: "Undo",
-    back: "Back",
-    nextDish: "Next dish",
-    myPicks: "My picks",
-    sayOrder: "Say your order",
-    listening: "Listening… speak in English, Malay, Cantonese, Hokkien or Mandarin",
-    stopAndMatch: "Done speaking",
-    cancel: "Back to menu",
-    switchBig: "Big Photos",
-    tableOrder: "Table Picks",
-    emptyPicks: "No dishes picked yet.",
-    close: "Back to menu",
-    soldOut: "Sold out",
-    soldOutTryThese: "Sorry Auntie/Uncle, that dish is sold out today! Try one of these instead:",
-    didYouMean: "Did you mean one of these dishes? Tap to add:",
-    chooseFromPhotos: "Or tap any dish photo below:",
-  },
-  ms: {
-    dishOf: (i, total) => `Hidangan ${i} daripada ${total}`,
-    iWantThis: "✓ Saya mahu ini",
-    added: "✓ Ditambah!",
-    undo: "Batal",
-    back: "Kembali",
-    nextDish: "Seterusnya",
-    myPicks: "Pilihan saya",
-    sayOrder: "Sebut pesanan",
-    listening: "Mendengar… sila sebut pesanan anda",
-    stopAndMatch: "Siap bercakap",
-    cancel: "Kembali ke menu",
-    switchBig: "Gambar Besar",
-    tableOrder: "Pilihan Meja",
-    emptyPicks: "Belum ada pilihan.",
-    close: "Kembali ke menu",
-    soldOut: "Habis dijual",
-    soldOutTryThese: "Maaf Pakcik/Makcik, hidangan itu sudah habis! Cuba yang ini:",
-    didYouMean: "Adakah anda maksudkan salah satu daripada ini?",
-    chooseFromPhotos: "Atau tekan gambar hidangan di bawah:",
-  },
-  zh: {
-    dishOf: (i, total) => `第 ${i} / ${total} 道菜`,
-    iWantThis: "✓ 我要这个",
-    added: "✓ 已加入点餐车！",
-    undo: "撤销",
-    back: "上一道",
-    nextDish: "下一道",
-    myPicks: "我点的菜",
-    sayOrder: "语音点餐",
-    listening: "请说话… 支持广东话、福建话、华语、马来语、英语",
-    stopAndMatch: "说完了",
-    cancel: "返回菜单",
-    switchBig: "大图菜单",
-    tableOrder: "本桌已选",
-    emptyPicks: "还没有点菜。",
-    close: "返回菜单",
-    soldOut: "已售罄",
-    soldOutTryThese: "不好意思，这道菜卖完了！要不要试试这些：",
-    didYouMean: "您是不是要点这些？点一下就能加入：",
-    chooseFromPhotos: "或者直接点下面的菜品图片：",
-  },
-};
-
-// Dialect & fuzzy pronunciation map for Cantonese, Hokkien, Bahasa Rojak, Malay, Mandarin
-const DIALECT_KEYWORDS: Record<string, string[]> = {
-  "nasi-lemak": ["nasi lemak", "nasilemak", "lemak", "椰浆饭", "辣死你妈", "lah si", "ayam goreng"],
-  "char-kuey-teow": ["char kuey teow", "char kway teow", "ckt", "chao guo tiao", "炒粿条", "炒贵刁", "kuey teow", "guetiau"],
-  "hainanese-chicken-rice": ["chicken rice", "nasi ayam", "kai fan", "gai fan", "鸡饭", "海南鸡饭", "pak cham kai", "白斩鸡"],
-  "laksa": ["laksa", "curry laksa", "asam laksa", "叻沙", "咖喱面", "curry mee"],
-  "roti-canai": ["roti", "roti canai", "roti kosong", "印度煎饼", "canai"],
-  "teh-tarik": ["teh tarik", "teh", "teh peng", "teh c", "拉茶", "奶茶", "cha"],
-  "kopi": ["kopi", "kopi o", "kopi peng", "kopi c", "coffee", "咖啡", "ga fei", "cham"],
-};
-
-export default function TableOrderPage({
-  initialMode,
-  tableOverride,
-  embedded = false,
-}: {
-  initialMode?: ViewMode;
-  tableOverride?: string;
-  embedded?: boolean;
-} = {}) {
-  const params = useParams<{ table?: string }>();
-  const table = tableOverride ?? params?.table ?? "5";
-
-  const [mode, setMode] = useState<ViewMode>(initialMode ?? "choose");
-  const [lang, setLang] = useState<Lang>("en");
-  const [menu, setMenu] = useState<MenuItem[]>([]);
-  const [problem, setProblem] = useState<string | null>(null);
-  const [index, setIndex] = useState(0);
-  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
-
-  const [cart, setCart] = useState<Record<string, number>>({});
-  const [showPicks, setShowPicks] = useState(false);
-
-  // Voice & smart suggestion state
-  const [voiceOpen, setVoiceOpen] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "matched" | "sold_out" | "suggest">("idle");
-  const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
-  const [suggestedDishes, setSuggestedDishes] = useState<MenuItem[]>([]);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const speechRecRef = useRef<any>(null);
-  const transcriptRef = useRef<string>("");
-  const chunksRef = useRef<BlobPart[]>([]);
-
-  useEffect(() => {
-    const unsub = store.subscribeMenu((items) => {
-      setMenu(items);
-    }, setProblem);
-    return () => {
-      if (typeof unsub === "function") unsub();
-    };
-  }, []);
-
-  useEffect(() => {
-    const anyStore = store as Record<string, any>;
-    if (typeof anyStore.subscribeTable === "function") {
-      const unsub = anyStore.subscribeTable(
-        table,
-        (tableState: any) => {
-          if (tableState && typeof tableState === "object") {
-            const nextCart: Record<string, number> = {};
-            if (Array.isArray(tableState.items)) {
-              for (const line of tableState.items) {
-                nextCart[line.id ?? line.itemId] = line.qty ?? line.quantity ?? 1;
-              }
-            } else if (tableState.quantities) {
-              Object.assign(nextCart, tableState.quantities);
-            }
-            setCart(nextCart);
-          }
-        },
-        setProblem
-      );
-      return () => {
-        if (typeof unsub === "function") unsub();
-      };
-    }
-
-    const saved = localStorage.getItem(`ezorder_cart_${table}`);
-    if (saved) {
-      try {
-        setCart(JSON.parse(saved));
-      } catch {
-        // ignore invalid JSON
-      }
-    }
-  }, [table]);
-
-  function updateQty(itemId: string, delta: number) {
-    setCart((prev) => {
-      const nextQty = Math.max(0, (prev[itemId] ?? 0) + delta);
-      const next = { ...prev };
-      if (nextQty === 0) {
-        delete next[itemId];
-      } else {
-        next[itemId] = nextQty;
-      }
-      localStorage.setItem(`ezorder_cart_${table}`, JSON.stringify(next));
-      return next;
-    });
-
-    const anyStore = store as Record<string, any>;
-    if (typeof anyStore.addItem === "function" && delta > 0) {
-      void anyStore.addItem(table, itemId, delta);
-    } else if (typeof anyStore.setQty === "function") {
-      const current = (cart[itemId] ?? 0) + delta;
-      void anyStore.setQty(table, itemId, Math.max(0, current));
-    }
-  }
-
-  const availableDishes = menu.filter((item) => item.inStock !== false);
-  const soldOutDishes = menu.filter((item) => item.inStock === false);
-  const safeIndex =
-    availableDishes.length > 0 ? Math.min(index, availableDishes.length - 1) : 0;
-  const currentDish = availableDishes[safeIndex] ?? null;
-
-  const totalPicks = Object.values(cart).reduce((sum, n) => sum + n, 0);
-  const totalPrice = menu.reduce(
-    (sum, item) => sum + (cart[item.id] ?? 0) * item.price,
-    0
-  );
-
-  const t = UI_TEXT[lang];
-
-  function handlePickCurrent() {
-    if (!currentDish) return;
-    updateQty(currentDish.id, 1);
-    setLastAddedId(currentDish.id);
-    setTimeout(() => setLastAddedId(null), 2500);
-  }
-
-  function handleUndoLast() {
-    if (!lastAddedId) return;
-    updateQty(lastAddedId, -1);
-    setLastAddedId(null);
-  }
-
-  function getDishName(item: MenuItem): string {
-    const n = item.name as Record<string, string>;
-    return n?.[lang] || n?.en || "Dish";
-  }
-
-  function getDishDesc(item: MenuItem): string {
-    const d = (item as Record<string, any>).description as
-      | Record<string, string>
-      | string
-      | undefined;
-    if (!d) return "";
-    if (typeof d === "string") return d;
-    return d[lang] || d.en || "";
-  }
-
-  function getDishImage(item: MenuItem): string {
-    const anyItem = item as Record<string, any>;
-    return anyItem.image || anyItem.photo || `/menu/${item.id}.jpg`;
-  }
-
-  // Local dialect + fuzzy matcher so Cantonese/Hokkien/Rojak & sold-out alternatives always work
-  function matchSpokenTextLocally(spoken: string) {
-    const clean = spoken.toLowerCase().trim();
-    if (!clean) {
-      setVoiceStatus("suggest");
-      setVoiceMessage(t.didYouMean);
-      setSuggestedDishes(availableDishes.slice(0, 4));
-      return;
-    }
-
-    const scoreItem = (item: MenuItem) => {
-      const names = [
-        item.id,
-        item.name?.en,
-        item.name?.ms,
-        item.name?.zh,
-        ...((item as any).nicknames ?? []),
-        ...(DIALECT_KEYWORDS[item.id] ?? []),
-      ]
-        .filter(Boolean)
-        .map((s) => String(s).toLowerCase());
-
-      let score = 0;
-      for (const kw of names) {
-        if (clean.includes(kw) || kw.includes(clean)) score += 3;
-        for (const word of clean.split(/\s+/)) {
-          if (word.length >= 2 && kw.includes(word)) score += 1;
-        }
-      }
-      return score;
-    };
-
-    const ranked = [...menu]
-      .map((item) => ({ item, score: scoreItem(item) }))
-      .sort((a, b) => b.score - a.score);
-
-    const best = ranked[0];
-    if (best && best.score > 0) {
-      if (best.item.inStock === false) {
-        // Dish requested is SOLD OUT -> suggest available alternatives!
-        setVoiceStatus("sold_out");
-        setVoiceMessage(
-          `${getDishName(best.item)} (${t.soldOut}). ${t.soldOutTryThese}`
-        );
-        setSuggestedDishes(availableDishes.slice(0, 3));
-        return;
-      }
-
-      // Dish is in stock -> show confirmation / add
-      updateQty(best.item.id, 1);
-      setVoiceStatus("matched");
-      setVoiceMessage(`✓ ${getDishName(best.item)} — ${t.added}`);
-      setSuggestedDishes([best.item, ...availableDishes.filter((d) => d.id !== best.item.id).slice(0, 2)]);
-      return;
-    }
-
-    // Fuzzy fallback: never leave the elderly user frustrated
-    setVoiceStatus("suggest");
-    setVoiceMessage(`"${spoken}" — ${t.didYouMean}`);
-    setSuggestedDishes(availableDishes.slice(0, 4));
-  }
-
-  async function startVoiceRecording() {
-    setVoiceMessage(null);
-    setVoiceStatus("idle");
-    setSuggestedDishes(availableDishes.slice(0, 4));
-    transcriptRef.current = "";
-    setVoiceOpen(true);
-
-    // Start browser speech recognition in parallel for instant Cantonese/Malay/Mandarin/English fallback
-    try {
-      const SpeechRec =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRec) {
-        const rec = new SpeechRec();
-        rec.lang = lang === "zh" ? "zh-MY" : lang === "ms" ? "ms-MY" : "en-MY";
-        rec.interimResults = true;
-        rec.onresult = (event: any) => {
-          const text = Array.from(event.results)
-            .map((r: any) => r[0]?.transcript ?? "")
-            .join(" ");
-          transcriptRef.current = text;
-        };
-        rec.start();
-        speechRecRef.current = rec;
-      }
-    } catch {
-      // ignore if browser speech recognition is unavailable
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        await sendAudioToIlmu(blob);
-      };
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setRecording(true);
-    } catch {
-      setRecording(false);
-      setVoiceStatus("suggest");
-      setVoiceMessage(t.chooseFromPhotos);
-    }
-  }
-
-  function stopVoiceRecording() {
-    try {
-      speechRecRef.current?.stop?.();
-    } catch {
-      // ignore
-    }
-    if (mediaRecorderRef.current && recording) {
-      mediaRecorderRef.current.stop();
-      setRecording(false);
-    }
-  }
-
-  async function sendAudioToIlmu(blob: Blob) {
-    setVoiceMessage("Matching your order…");
-    try {
-      const form = new FormData();
-      const ext = blob.type.includes("mp4") ? "order.m4a" : "order.webm";
-      form.append("audio", blob, ext);
-      form.append("table", table);
-
-      const res = await fetch("/api/voice", {
-        method: "POST",
-        body: form,
-      });
-
-      if (!res.ok) throw new Error("ILMU fallback");
-      const data = await res.json();
-
-      if (data?.status === "sold_out" || data?.soldOut) {
-        setVoiceStatus("sold_out");
-        setVoiceMessage(data?.message ?? t.soldOutTryThese);
-        setSuggestedDishes(availableDishes.slice(0, 3));
-        return;
-      }
-
-      if (data?.items && Array.isArray(data.items) && data.items.length > 0) {
-        for (const matched of data.items) {
-          updateQty(matched.id ?? matched.dishId, matched.qty ?? 1);
-        }
-        setVoiceStatus("matched");
-        setVoiceMessage(data?.message ?? t.added);
-        return;
-      }
-
-      matchSpokenTextLocally(data?.transcript ?? transcriptRef.current);
-    } catch {
-      matchSpokenTextLocally(transcriptRef.current);
-    }
-  }
-
-  // Dynamic viewport shell so mobile toolbars never clip the price or buttons
-  const shellClass = embedded
-    ? "flex h-full w-full flex-col bg-[#f5f3ef] text-neutral-900 overflow-hidden"
-    : "mx-auto flex h-dvh max-h-dvh w-full max-w-md flex-col bg-[#f5f3ef] text-neutral-900 overflow-hidden pb-[max(0.4rem,env(safe-area-inset-bottom))]";
-
-  // ---------------------------------------------------------------------------
-  // SCREEN 1: MODE SELECTION ("How do you want to order?")
-  // ---------------------------------------------------------------------------
-  if (mode === "choose") {
-    const heroImage =
-      availableDishes[0] ? getDishImage(availableDishes[0]) : "/menu/nasi-lemak.jpg";
-
-    return (
-      <div className={shellClass}>
-        <header className="bg-[#f47521] px-4 py-2.5 shrink-0">
-          <p className="font-extrabold text-black text-base sm:text-lg leading-tight truncate">
-            Kopitiam Sedap
-          </p>
-          <p className="text-black/90 font-semibold text-xs sm:text-sm">
-            Table {table}
-          </p>
-        </header>
-
-        <main className="flex-1 flex flex-col justify-between p-3.5 sm:p-4 gap-3 overflow-y-auto">
-          <div className="shrink-0">
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-neutral-900 leading-tight">
-              How do you want to order?
-            </h1>
-            <p className="text-base sm:text-lg font-bold text-neutral-600 mt-1">
-              Bagaimana anda mahu pesan?
-            </p>
-            <p className="text-base sm:text-lg font-bold text-neutral-600">
-              您想怎样点餐？
-            </p>
-          </div>
-
-          <div className="flex-1 flex flex-col justify-center gap-3 min-h-0">
-            <button
-              onClick={() => setMode("big")}
-              className="w-full text-left bg-white border-[3px] border-[#f47521] rounded-3xl p-3.5 sm:p-4 flex items-center gap-3.5 shadow-sm active:scale-[0.99] transition"
-            >
-              <div className="w-24 sm:w-28 shrink-0 bg-neutral-100 rounded-2xl p-2 flex flex-col items-center gap-1.5">
-                <img
-                  src={heroImage}
-                  alt="Big Photos Menu"
-                  className="w-full aspect-square object-cover rounded-full"
-                />
-                <span className="w-full bg-[#f47521] text-black font-extrabold text-center py-1 rounded-lg text-xs sm:text-sm">
-                  ✓
-                </span>
-              </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="text-xl sm:text-2xl font-extrabold text-neutral-900 leading-tight">
-                  Big Photos Menu
-                </h2>
-                <p className="text-base sm:text-lg font-bold text-neutral-600 leading-snug mt-1">
-                  Menu Gambar Besar
-                </p>
-                <p className="text-base sm:text-lg font-bold text-neutral-600 mt-0.5">
-                  大图菜单
-                </p>
-              </div>
-            </button>
-
-            <button
-              onClick={() => setMode("normal")}
-              className="w-full text-left bg-white border-2 border-neutral-300 rounded-3xl p-3.5 sm:p-4 flex items-center gap-3.5 shadow-sm active:scale-[0.99] transition"
-            >
-              <div className="w-24 sm:w-28 shrink-0 bg-neutral-100 rounded-2xl p-3 flex flex-col gap-2 justify-center aspect-square">
-                <div className="h-2.5 bg-neutral-400 rounded-full" />
-                <div className="h-2.5 bg-neutral-400 rounded-full" />
-                <div className="h-2.5 bg-neutral-400 rounded-full" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="text-lg sm:text-xl font-extrabold text-neutral-900 leading-tight">
-                  Normal Menu
-                </h2>
-                <p className="text-sm sm:text-base font-bold text-neutral-600 mt-1">
-                  Menu Biasa
-                </p>
-                <p className="text-sm sm:text-base font-bold text-neutral-600">
-                  普通菜单
-                </p>
-              </div>
-            </button>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCREEN 2: NORMAL MENU (With Sold-Out Suggestions)
-  // ---------------------------------------------------------------------------
-  if (mode === "normal") {
-    return (
-      <div className={shellClass}>
-        <header className="bg-[#f47521] px-3 py-2 flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <button
-              onClick={() => setMode("choose")}
-              className="w-8 h-8 shrink-0 rounded-xl border-2 border-black/80 flex items-center justify-center font-extrabold text-black"
-            >
-              &lt;
-            </button>
-            <div className="min-w-0 leading-tight">
-              <p className="font-extrabold text-black text-sm truncate">
-                Kopitiam Sedap
-              </p>
-              <p className="text-xs font-bold text-black/90">Table {table}</p>
-            </div>
-          </div>
-
-          <button
-            onClick={() => setMode("big")}
-            className="bg-white text-black font-bold text-xs px-3 py-1.5 rounded-xl shrink-0"
-          >
-            {t.switchBig}
-          </button>
-        </header>
-
-        <main className="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
-          {menu.map((item) => {
-            const qty = cart[item.id] ?? 0;
-            const soldOut = item.inStock === false;
-            return (
-              <div
-                key={item.id}
-                className={`bg-white rounded-2xl p-2.5 flex items-center gap-3 shadow-sm ${
-                  soldOut ? "opacity-75" : ""
-                }`}
-              >
-                <img
-                  src={getDishImage(item)}
-                  alt={getDishName(item)}
-                  className="w-16 h-16 rounded-xl object-cover shrink-0 bg-neutral-100"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="font-extrabold text-base text-neutral-900 truncate">
-                    {getDishName(item)}
-                  </p>
-                  <p className="text-xs text-neutral-600 line-clamp-1">
-                    {getDishDesc(item)}
-                  </p>
-                  <p className="text-sm font-extrabold text-neutral-900 mt-0.5">
-                    {formatRM(item.price)}
-                  </p>
-                </div>
-
-                {soldOut ? (
-                  <button
-                    onClick={() => {
-                      setVoiceStatus("sold_out");
-                      setVoiceMessage(`${getDishName(item)} — ${t.soldOutTryThese}`);
-                      setSuggestedDishes(availableDishes.slice(0, 3));
-                      setVoiceOpen(true);
-                    }}
-                    className="text-xs font-extrabold bg-amber-100 text-amber-900 px-2.5 py-1.5 rounded-lg shrink-0"
-                  >
-                    {t.soldOut} · Alternatives
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {qty > 0 && (
-                      <>
-                        <button
-                          onClick={() => updateQty(item.id, -1)}
-                          className="w-8 h-8 rounded-lg border-2 border-neutral-900 font-extrabold text-base flex items-center justify-center"
-                        >
-                          −
-                        </button>
-                        <span className="w-5 text-center font-extrabold text-sm">
-                          {qty}
-                        </span>
-                      </>
-                    )}
-                    <button
-                      onClick={() => updateQty(item.id, 1)}
-                      className="h-8 px-2.5 rounded-lg bg-[#f47521] text-black font-extrabold text-sm flex items-center justify-center"
-                    >
-                      +
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </main>
-
-        <footer className="bg-white border-t border-neutral-200 p-3 flex items-center justify-between shrink-0">
-          <div>
-            <p className="text-xs font-bold text-neutral-500">
-              {t.tableOrder} ({totalPicks})
-            </p>
-            <p className="text-lg font-extrabold text-neutral-900">
-              {formatRM(totalPrice)}
-            </p>
-          </div>
-          <button
-            onClick={() => setShowPicks(true)}
-            className="bg-neutral-900 text-white font-extrabold text-sm px-4 py-2.5 rounded-xl"
-          >
-            {t.myPicks} ({totalPicks})
-          </button>
-        </footer>
-      </div>
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // SCREEN 3: BIG PHOTOS MENU (Fits 100% of all screens without clipping RM 8.90)
-  // ---------------------------------------------------------------------------
-  return (
-    <div className={shellClass}>
-      {/* Compact Header - fits Kopitiam Sedap + Table + Language Switcher cleanly */}
-      <header className="bg-[#f47521] px-2.5 py-1.5 flex items-center justify-between gap-1.5 shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
-          <button
-            onClick={() => setMode("choose")}
-            aria-label="Back to menu mode"
-            className="w-8 h-8 shrink-0 rounded-lg border-2 border-black/80 flex items-center justify-center text-base font-extrabold text-black active:bg-black/10"
-          >
-            &lt;
-          </button>
-          <div className="min-w-0 leading-tight">
-            <p className="font-extrabold text-black text-xs sm:text-sm truncate">
-              Kopitiam Sedap
-            </p>
-            <p className="text-[11px] sm:text-xs font-bold text-black/90 truncate">
-              Table {table}
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl p-0.5 flex items-center shrink-0 text-[11px] sm:text-xs font-bold">
-          <button
-            onClick={() => setLang("en")}
-            className={`px-2 py-1 rounded-lg transition ${
-              lang === "en" ? "bg-neutral-900 text-white" : "text-neutral-900"
-            }`}
-          >
-            English
-          </button>
-          <button
-            onClick={() => setLang("ms")}
-            className={`px-1.5 py-1 rounded-lg transition ${
-              lang === "ms" ? "bg-neutral-900 text-white" : "text-neutral-900"
-            }`}
-          >
-            Melayu
-          </button>
-          <button
-            onClick={() => setLang("zh")}
-            className={`px-1.5 py-1 rounded-lg transition ${
-              lang === "zh" ? "bg-neutral-900 text-white" : "text-neutral-900"
-            }`}
-          >
-            中文
-          </button>
-        </div>
-      </header>
-
-      {problem && (
-        <p className="bg-red-100 text-red-900 text-xs font-bold px-3 py-1 shrink-0">
-          {problem}
-        </p>
-      )}
-
-      {/* Sold-out notice bar if kitchen ran out of items */}
-      {soldOutDishes.length > 0 && (
-        <button
-          onClick={() => {
-            setVoiceStatus("sold_out");
-            setVoiceMessage(
-              `${soldOutDishes.map((d) => getDishName(d)).join(", ")} (${t.soldOut}). ${t.soldOutTryThese}`
-            );
-            setSuggestedDishes(availableDishes.slice(0, 3));
-            setVoiceOpen(true);
-          }}
-          className="bg-amber-100 text-amber-950 text-xs font-bold px-3 py-1 text-left shrink-0 truncate"
-        >
-          ⚠️ {t.soldOut}: {soldOutDishes.map((d) => getDishName(d)).join(", ")} (Tap for suggestions)
-        </button>
-      )}
-
-      {/* Elastic Body */}
-      <main className="flex-1 min-h-0 flex flex-col justify-between p-2 sm:p-3 gap-1.5 sm:gap-2">
-        {currentDish ? (
-          <div className="bg-white rounded-2xl p-2.5 sm:p-3.5 shadow-sm flex-1 min-h-0 flex flex-col justify-between overflow-hidden">
-            {/* Image automatically adjusts height so text & price below NEVER get cut off */}
-            <div className="w-full flex-1 min-h-[80px] rounded-xl overflow-hidden bg-neutral-100">
-              <img
-                src={getDishImage(currentDish)}
-                alt={getDishName(currentDish)}
-                className="w-full h-full object-cover"
-              />
-            </div>
-
-            {/* Dish Info + RM Price locked in view */}
-            <div className="shrink-0 pt-2">
-              <p className="text-[11px] sm:text-xs font-semibold text-neutral-500">
-                {t.dishOf(safeIndex + 1, availableDishes.length)}
-              </p>
-
-              <h1 className="text-xl sm:text-2xl font-extrabold text-neutral-900 leading-tight truncate mt-0.5">
-                {getDishName(currentDish)}
-              </h1>
-
-              <div className="flex items-end justify-between gap-2 mt-1">
-                <p className="text-xs sm:text-sm text-neutral-600 line-clamp-2 leading-snug flex-1">
-                  {getDishDesc(currentDish)}
-                </p>
-                <span className="text-lg sm:text-xl font-extrabold text-neutral-900 shrink-0 leading-none">
-                  {formatRM(currentDish.price)}
-                </span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-white rounded-2xl p-6 flex-1 flex items-center justify-center text-center font-bold text-neutral-500">
-            Loading menu…
-          </div>
-        )}
-
-        {/* Bottom Action Buttons */}
-        <div className="shrink-0 flex flex-col gap-1.5">
-          {lastAddedId ? (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handlePickCurrent}
-                className="flex-1 bg-green-600 text-white font-extrabold text-base sm:text-lg py-2.5 rounded-2xl"
-              >
-                {t.added}
-              </button>
-              <button
-                onClick={handleUndoLast}
-                className="bg-neutral-900 text-white font-extrabold text-sm sm:text-base px-4 py-2.5 rounded-2xl shrink-0"
-              >
-                ↩ {t.undo}
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handlePickCurrent}
-              disabled={!currentDish}
-              className="w-full bg-[#f47521] active:bg-[#d96416] text-black font-extrabold text-lg sm:text-xl py-2.5 rounded-2xl shadow-sm transition disabled:opacity-40"
-            >
-              {t.iWantThis}
-            </button>
-          )}
-
-          <div className="grid grid-cols-3 gap-1.5">
-            <button
-              onClick={() =>
-                setIndex((i) =>
-                  availableDishes.length > 0
-                    ? (i - 1 + availableDishes.length) % availableDishes.length
-                    : 0
-                )
-              }
-              className="col-span-1 bg-neutral-200 active:bg-neutral-300 text-neutral-800 font-bold text-sm sm:text-base py-2 rounded-2xl transition"
-            >
-              {t.back}
-            </button>
-            <button
-              onClick={() =>
-                setIndex((i) =>
-                  availableDishes.length > 0
-                    ? (i + 1) % availableDishes.length
-                    : 0
-                )
-              }
-              className="col-span-2 bg-white border-2 border-neutral-900 text-neutral-900 font-extrabold text-base sm:text-lg py-2 rounded-2xl active:bg-neutral-100 transition"
-            >
-              {t.nextDish}
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => setShowPicks(true)}
-              className="bg-neutral-900 text-white font-bold text-sm sm:text-base py-2 px-2.5 rounded-2xl flex items-center justify-center gap-1.5"
-            >
-              <span className="truncate">{t.myPicks}</span>
-              <span className="bg-white text-black rounded-full px-2 py-0.5 text-xs font-extrabold shrink-0">
-                {totalPicks}
-              </span>
-            </button>
-
-            <button
-              onClick={() => void startVoiceRecording()}
-              className="bg-white border-2 border-neutral-900 text-neutral-900 font-bold text-xs sm:text-sm py-2 px-2.5 rounded-2xl flex items-center justify-center gap-1.5 leading-tight"
-            >
-              <span aria-hidden="true" className="text-base shrink-0">
-                🎙️
-              </span>
-              <span className="line-clamp-2 text-left">{t.sayOrder}</span>
-            </button>
-          </div>
-        </div>
-      </main>
-
-      {/* MY PICKS DRAWER */}
-      {showPicks && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
-          <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-3 max-h-[85dvh]">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-extrabold">{t.myPicks}</h2>
-              <span className="text-lg font-extrabold">
-                {formatRM(totalPrice)}
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto flex flex-col gap-2">
-              {totalPicks === 0 ? (
-                <p className="text-neutral-500 py-6 text-center font-semibold">
-                  {t.emptyPicks}
-                </p>
-              ) : (
-                menu
-                  .filter((item) => (cart[item.id] ?? 0) > 0)
-                  .map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between gap-2 bg-neutral-100 rounded-2xl p-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="font-extrabold text-base truncate">
-                          {getDishName(item)}
-                        </p>
-                        <p className="text-xs font-bold text-neutral-600">
-                          {formatRM(item.price)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => updateQty(item.id, -1)}
-                          className="w-10 h-10 rounded-xl bg-white border-2 border-neutral-900 font-extrabold text-lg"
-                        >
-                          −
-                        </button>
-                        <span className="w-6 text-center font-extrabold text-base">
-                          {cart[item.id]}
-                        </span>
-                        <button
-                          onClick={() => updateQty(item.id, 1)}
-                          className="w-10 h-10 rounded-xl bg-[#f47521] text-black font-extrabold text-lg"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
-
-            <button
-              onClick={() => setShowPicks(false)}
-              className="w-full bg-neutral-900 text-white font-extrabold text-lg py-3 rounded-2xl"
-            >
-              ⬅️ {t.close}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* VOICE & SMART SUGGESTIONS MODAL */}
-      {voiceOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
-          <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-3 max-h-[85dvh]">
-            <h2 className="text-xl font-extrabold">🎙️ {t.sayOrder}</h2>
-            <p
-              className={`text-sm font-bold rounded-xl p-2.5 ${
-                voiceStatus === "sold_out"
-                  ? "bg-amber-100 text-amber-950"
-                  : voiceStatus === "matched"
-                  ? "bg-green-100 text-green-950"
-                  : "bg-neutral-100 text-neutral-800"
-              }`}
-            >
-              {recording ? t.listening : voiceMessage || t.chooseFromPhotos}
-            </p>
-
-            {recording ? (
-              <button
-                onClick={stopVoiceRecording}
-                className="w-full bg-[#f47521] text-black font-extrabold text-lg py-3.5 rounded-2xl"
-              >
-                ✓ {t.stopAndMatch}
-              </button>
-            ) : (
-              <div className="grid grid-cols-2 gap-2 overflow-y-auto max-h-60">
-                {(suggestedDishes.length > 0 ? suggestedDishes : availableDishes).map(
-                  (item) => (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        updateQty(item.id, 1);
-                        setLastAddedId(item.id);
-                        setVoiceOpen(false);
-                      }}
-                      className="flex flex-col items-start bg-neutral-100 hover:bg-orange-50 border-2 border-transparent active:border-[#f47521] rounded-2xl p-2 text-left transition"
-                    >
-                      <img
-                        src={getDishImage(item)}
-                        alt={getDishName(item)}
-                        className="w-full h-20 object-cover rounded-xl"
-                      />
-                      <span className="font-extrabold text-sm mt-1 truncate w-full">
-                        {getDishName(item)}
-                      </span>
-                      <span className="text-xs font-bold text-neutral-700">
-                        {formatRM(item.price)} · + Add
-                      </span>
-                    </button>
-                  )
-                )}
-              </div>
-            )}
-
-            <button
-              onClick={() => {
-                stopVoiceRecording();
-                setVoiceOpen(false);
-              }}
-              className="w-full bg-neutral-900 text-white font-extrabold text-base py-3 rounded-2xl"
-            >
-              ⬅️ {t.cancel}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { formatRM } from "@/lib/menu";
 import { store } from "@/lib/store";
@@ -966,18 +9,35 @@ import type { MenuItem } from "@/lib/types";
 
 type Lang = "en" | "ms" | "zh";
 type ViewMode = "choose" | "big" | "normal";
+type OrderType = "dine_in" | "takeaway";
+
+interface PendingConfirmation {
+  items: MenuItem[];
+  orderType: OrderType;
+  isSoldOutAlternative?: boolean;
+  soldOutItemName?: string;
+  spokenPrompt: string;
+}
 
 const UI_TEXT: Record<
   Lang,
   {
+    switchMenu: string;
+    tableLabel: (t: string) => string;
+    dineIn: string;
+    takeaway: string;
     dishOf: (i: number, total: number) => string;
+    hearDish: string;
     iWantThis: (num: number) => string;
-    added: string;
-    undo: string;
     back: string;
     nextDish: string;
     myPicks: string;
     sayOrder: string;
+    confirmTitle: string;
+    yesConfirm: string;
+    noCancel: string;
+    speakAgain: string;
+    voiceConfirmHint: string;
     listening: string;
     voiceHint: string;
     stopAndMatch: string;
@@ -987,99 +47,186 @@ const UI_TEXT: Record<
     emptyPicks: string;
     close: string;
     soldOut: string;
-    soldOutTryThese: string;
-    didYouMean: string;
-    chooseFromPhotos: string;
+    orderSentBanner: string;
+    sendOrderNow: string;
   }
 > = {
   en: {
+    switchMenu: "Menu",
+    tableLabel: (t) => `Table ${t}`,
+    dineIn: "🍽️ Eat Here",
+    takeaway: "🛍️ Takeaway (Tapau)",
     dishOf: (i, total) => `Dish #${i} of ${total}`,
+    hearDish: "🔊 Hear dish",
     iWantThis: (num) => `✓ I want #${num}`,
-    added: "✓ Added to your picks!",
-    undo: "Undo",
-    back: "Back",
-    nextDish: "Next dish",
+    back: "Prev",
+    nextDish: "Next dish ➔",
     myPicks: "My picks",
-    sayOrder: "Say your order",
-    listening: "Listening… say dish numbers (e.g. 'I want 1, 2, 3') or names",
-    voiceHint: "Speak in English, Malay, Mandarin, Cantonese, Hokkien or Rojak",
-    stopAndMatch: "Done speaking",
+    sayOrder: "Voice Order",
+    confirmTitle: "Please Confirm Your Order",
+    yesConfirm: "✓ YES, I WANT THIS",
+    noCancel: "✕ NO, CHANGE",
+    speakAgain: "🔊 Read back again",
+    voiceConfirmHint: "Tap YES / NO or say 'Yes' or 'No'",
+    listening: "Listening… say dish # (1, 2, 3), name, or 'Tapau / Eat here'",
+    voiceHint: "Understands English, Malay, Mandarin, Cantonese, Hokkien & Rojak",
+    stopAndMatch: "✓ Done speaking",
     cancel: "Back to menu",
     switchBig: "Big Photos",
-    tableOrder: "Table Picks",
+    tableOrder: "Order Summary",
     emptyPicks: "No dishes picked yet.",
     close: "Back to menu",
     soldOut: "Sold out",
-    soldOutTryThese: "Sorry Auntie/Uncle, that dish is sold out! Try one of these instead:",
-    didYouMean: "Tap to confirm or add more dishes:",
-    chooseFromPhotos: "Tap any dish number below to add:",
+    orderSentBanner: "✓ Confirmed & added to your order!",
+    sendOrderNow: "✓ Confirm All & Send to Kitchen",
   },
   ms: {
+    switchMenu: "Menu",
+    tableLabel: (t) => `Meja ${t}`,
+    dineIn: "🍽️ Makan Sini",
+    takeaway: "🛍️ Bungkus (Tapau)",
     dishOf: (i, total) => `Hidangan #${i} daripada ${total}`,
+    hearDish: "🔊 Dengar",
     iWantThis: (num) => `✓ Saya mahu #${num}`,
-    added: "✓ Ditambah!",
-    undo: "Batal",
-    back: "Kembali",
-    nextDish: "Seterusnya",
-    myPicks: "Pilihan saya",
-    sayOrder: "Sebut pesanan",
-    listening: "Mendengar… sebut nombor (cth: 'Saya nak 1, 2, 3') atau nama",
-    voiceHint: "Boleh cakap Melayu, Inggeris, Cina, Kantonis atau Rojak",
-    stopAndMatch: "Siap bercakap",
-    cancel: "Kembali ke menu",
+    back: "Sebelum",
+    nextDish: "Seterusnya ➔",
+    myPicks: "Pilihan",
+    sayOrder: "Pesanan Suara",
+    confirmTitle: "Sila Sahkan Pesanan Anda",
+    yesConfirm: "✓ YA, SAYA MAHU INI",
+    noCancel: "✕ TIDAK, TUKAR",
+    speakAgain: "🔊 Dengar semula",
+    voiceConfirmHint: "Tekan YA / TIDAK atau sebut 'Ya' / 'Tidak'",
+    listening: "Mendengar… sebut nombor (1, 2, 3), nama hidangan, atau 'Bungkus'",
+    voiceHint: "Faham Bahasa Melayu, Inggeris, Cina, Kantonis & Rojak",
+    stopAndMatch: "✓ Siap bercakap",
+    cancel: "Kembali",
     switchBig: "Gambar Besar",
-    tableOrder: "Pilihan Meja",
+    tableOrder: "Ringkasan Meja",
     emptyPicks: "Belum ada pilihan.",
     close: "Kembali ke menu",
-    soldOut: "Habis dijual",
-    soldOutTryThese: "Maaf Pakcik/Makcik, hidangan itu sudah habis! Cuba yang ini:",
-    didYouMean: "Tekan untuk tambah hidangan:",
-    chooseFromPhotos: "Tekan nombor atau gambar hidangan di bawah:",
+    soldOut: "Habis",
+    orderSentBanner: "✓ Disahkan & ditambah ke pesanan!",
+    sendOrderNow: "✓ Sahkan Semua & Hantar ke Dapur",
   },
   zh: {
-    dishOf: (i, total) => `第 #${i} / ${total} 道菜`,
-    iWantThis: (num) => `✓ 我要 #${num} 号`,
-    added: "✓ 已加入点餐车！",
-    undo: "撤销",
+    switchMenu: "换菜单",
+    tableLabel: (t) => `${t}号桌`,
+    dineIn: "🍽️ 堂食",
+    takeaway: "🛍️ 打包 (Tapau)",
+    dishOf: (i, total) => `第 #${i} 道，共 ${total} 道`,
+    hearDish: "🔊 听语音报菜",
+    iWantThis: (num) => `✓ 我要 #${num} 号这道菜`,
     back: "上一道",
-    nextDish: "下一道",
-    myPicks: "我点的菜",
-    sayOrder: "语音点餐",
-    listening: "请说话… 可直接说号码（如：我要 1, 2, 3 号）或菜名",
-    voiceHint: "支持广东话、福建话、华语、马来语、英语混着说",
-    stopAndMatch: "说完了",
+    nextDish: "下一道菜 ➔",
+    myPicks: "我点的",
+    sayOrder: "说出您要点的",
+    confirmTitle: "请确认您的点餐",
+    yesConfirm: "✓ 是，我要这个 (YES)",
+    noCancel: "✕ 不要，换别的 (NO)",
+    speakAgain: "🔊 再听一次",
+    voiceConfirmHint: "请按「是」或「不要」，也可以直接说“要”或“不要”",
+    listening: "请说话… 可说号码（如 1号、2号）、菜名，或说“打包 / 堂食”",
+    voiceHint: "支持华语、广东话、福建话、马来语、英语混着说",
+    stopAndMatch: "✓ 说完了，帮我点餐",
     cancel: "返回菜单",
     switchBig: "大图菜单",
-    tableOrder: "本桌已选",
+    tableOrder: "本桌已选餐点",
     emptyPicks: "还没有点菜。",
     close: "返回菜单",
     soldOut: "已售罄",
-    soldOutTryThese: "不好意思，这道菜卖完了！要不要试试这些：",
-    didYouMean: "点一下图片即可加入：",
-    chooseFromPhotos: "或者直接点下面的号码/图片：",
+    orderSentBanner: "✓ 已确认加入点餐单！",
+    sendOrderNow: "✓ 确认全部并送往厨房",
   },
 };
 
-// Multilingual number tokens (English, Malay, Mandarin, Cantonese, Hokkien)
 const NUMBER_WORDS: Record<number, string[]> = {
-  1: ["1", "one", "first", "satu", "pertama", "一", "一号", "1号", "第一", "壹", "yat", "jat", "cit", "it"],
-  2: ["2", "two", "second", "dua", "kedua", "二", "两", "二号", "两号", "2号", "第二", "貳", "yi", "ji", "nng"],
-  3: ["3", "three", "third", "tiga", "ketiga", "三", "三号", "3号", "第三", "叁", "sam", "saam", "sa"],
-  4: ["4", "four", "fourth", "empat", "keempat", "四", "四号", "4号", "第四", "肆", "sei", "si", "pe"],
-  5: ["5", "five", "fifth", "lima", "kelima", "五", "五号", "5号", "第五", "伍", "ng", "go"],
-  6: ["6", "six", "sixth", "enam", "keenam", "六", "六号", "6号", "第六", "陆", "luk", "lak"],
-  7: ["7", "seven", "seventh", "tujuh", "ketujuh", "七", "七号", "7号", "第七", "柒", "chat", "chit"],
-  8: ["8", "eight", "eighth", "lapan", "kelapan", "八", "八号", "8号", "第八", "捌", "baat", "pat", "pue"],
+  1: ["1", "one", "first", "satu", "pertama", "一", "一号", "1号", "第一", "yat", "jat", "cit"],
+  2: ["2", "two", "second", "dua", "kedua", "二", "两", "二号", "两号", "2号", "第二", "yi", "ji", "nng"],
+  3: ["3", "three", "third", "tiga", "ketiga", "三", "三号", "3号", "第三", "sam", "saam", "sa"],
+  4: ["4", "four", "fourth", "empat", "keempat", "四", "四号", "4号", "第四", "sei", "si"],
+  5: ["5", "five", "fifth", "lima", "kelima", "五", "五号", "5号", "第五", "ng", "go"],
+  6: ["6", "six", "sixth", "enam", "keenam", "六", "六号", "6号", "第六", "luk", "lak"],
+  7: ["7", "seven", "seventh", "tujuh", "ketujuh", "七", "七号", "7号", "第七", "chat", "chit"],
+  8: ["8", "eight", "eighth", "lapan", "kelapan", "八", "八号", "8号", "第八", "baat", "pat"],
 };
 
-// Malaysian dialect & Bahasa Rojak dish keywords
+const TAKEAWAY_WORDS = [
+  "tapau",
+  "ta pau",
+  "dabao",
+  "da bao",
+  "bungkus",
+  "takeaway",
+  "take away",
+  "to go",
+  "打包",
+  "外带",
+  "拎走",
+  "包走",
+];
+
+const DINE_IN_WORDS = [
+  "eat here",
+  "dine in",
+  "having here",
+  "makan sini",
+  "堂食",
+  "这里吃",
+  "喺度食",
+  "内用",
+];
+
+const YES_WORDS = [
+  "yes",
+  "yeah",
+  "yep",
+  "ok",
+  "okay",
+  "confirm",
+  "correct",
+  "ya",
+  "betul",
+  "boleh",
+  "nak",
+  "mahu",
+  "要",
+  "是",
+  "好",
+  "可以",
+  "对",
+  "确定",
+  "係",
+  "好啊",
+];
+
+const NO_WORDS = [
+  "no",
+  "nope",
+  "cancel",
+  "wrong",
+  "change",
+  "tidak",
+  "tak",
+  "tak nak",
+  "bukan",
+  "batal",
+  "不要",
+  "不是",
+  "不对",
+  "取消",
+  "唔要",
+  "唔係",
+  "换",
+];
+
 const DIALECT_KEYWORDS: Record<string, string[]> = {
   "nasi-lemak": ["nasi lemak", "nasilemak", "lemak", "椰浆饭", "辣死你妈", "lah si", "ayam goreng"],
   "char-kuey-teow": ["char kuey teow", "char kway teow", "ckt", "chao guo tiao", "炒粿条", "炒贵刁", "kuey teow", "guetiau"],
-  "hainanese-chicken-rice": ["chicken rice", "nasi ayam", "kai fan", "gai fan", "鸡饭", "海南鸡饭", "pak cham kai", "白斩鸡"],
+  "hainanese-chicken-rice": ["chicken rice", "nasi ayam", "kai fan", "gai fan", "鸡饭", "海南鸡饭", "白斩鸡"],
   "laksa": ["laksa", "curry laksa", "asam laksa", "叻沙", "咖喱面", "curry mee"],
   "roti-canai": ["roti", "roti canai", "roti kosong", "印度煎饼", "canai"],
-  "teh-tarik": ["teh tarik", "teh", "teh peng", "teh c", "拉茶", "奶茶", "cha"],
+  "teh-tarik": ["teh tarik", "teh", "teh peng", "teh c", "拉茶", "奶茶"],
   "kopi": ["kopi", "kopi o", "kopi peng", "kopi c", "coffee", "咖啡", "ga fei", "cham"],
 };
 
@@ -1088,24 +235,51 @@ export default function TableOrderPage() {
   const table = params?.table ?? "1";
 
   const [mode, setMode] = useState<ViewMode>("big");
-  const [lang, setLang] = useState<Lang>("en");
+  const [lang, setLang] = useState<Lang>("zh");
+  const [orderType, setOrderType] = useState<OrderType>("dine_in");
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
-  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
+  const [banner, setBanner] = useState<string | null>(null);
 
   const [cart, setCart] = useState<Record<string, number>>({});
   const [showPicks, setShowPicks] = useState(false);
 
+  // High-attention Yes/No confirmation modal state
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
+
+  // Voice modal state
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "matched" | "sold_out" | "suggest">("idle");
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
-  const [suggestedDishes, setSuggestedDishes] = useState<MenuItem[]>([]);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const speechRecRef = useRef<{ stop: () => void } | null>(null);
+  const confirmSpeechRecRef = useRef<{ stop: () => void } | null>(null);
   const transcriptRef = useRef<string>("");
   const chunksRef = useRef<BlobPart[]>([]);
+
+  const t = UI_TEXT[lang];
+
+  // Text-to-Speech (TTS) Readback Function ("Tell It Back")
+  const speakOutLoud = useCallback(
+    (text: string, overrideLang?: Lang) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        const targetLang = overrideLang ?? lang;
+        utter.lang =
+          targetLang === "zh" ? "zh-CN" : targetLang === "ms" ? "ms-MY" : "en-MY";
+        utter.rate = 0.92; // Slightly slower & clearer for elderly listeners
+        utter.pitch = 1.0;
+        window.speechSynthesis.speak(utter);
+      } catch {
+        // Ignore if browser blocks autoplay TTS
+      }
+    },
+    [lang]
+  );
 
   useEffect(() => {
     const unsub = store.subscribeMenu((items) => {
@@ -1120,13 +294,34 @@ export default function TableOrderPage() {
     const saved = localStorage.getItem(`ezorder_cart_${table}`);
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as Record<string, number>;
-        setCart(parsed);
+        setCart(JSON.parse(saved) as Record<string, number>);
       } catch {
-        // ignore invalid JSON
+        // ignore
       }
     }
+    const savedType = localStorage.getItem(`ezorder_type_${table}`);
+    if (savedType === "dine_in" || savedType === "takeaway") {
+      setOrderType(savedType);
+    }
   }, [table]);
+
+  function changeOrderType(nextType: OrderType) {
+    setOrderType(nextType);
+    localStorage.setItem(`ezorder_type_${table}`, nextType);
+    const spoken =
+      lang === "zh"
+        ? nextType === "takeaway"
+          ? "已切换为打包带走"
+          : "已切换为堂食"
+        : lang === "ms"
+        ? nextType === "takeaway"
+          ? "Ditukar kepada Bungkus Tapau"
+          : "Ditukar kepada Makan Sini"
+        : nextType === "takeaway"
+        ? "Switched to Takeaway Tapau"
+        : "Switched to Eat Here";
+    speakOutLoud(spoken);
+  }
 
   function updateQty(itemId: string, delta: number) {
     setCart((prev) => {
@@ -1148,6 +343,8 @@ export default function TableOrderPage() {
         itemId,
         delta
       );
+    } else if (typeof storeObj.add === "function" && delta > 0) {
+      void (storeObj.add as (t: string, id: string) => Promise<void>)(table, itemId);
     }
   }
 
@@ -1163,8 +360,6 @@ export default function TableOrderPage() {
     0
   );
 
-  const t = UI_TEXT[lang];
-
   function getDishNumber(item: MenuItem): number {
     const idx = availableDishes.findIndex((d) => d.id === item.id);
     if (idx !== -1) return idx + 1;
@@ -1177,47 +372,232 @@ export default function TableOrderPage() {
   }
 
   function getDishDesc(item: MenuItem): string {
-    const raw = (item as unknown as Record<string, unknown>).description;
-    if (!raw) return "";
-    if (typeof raw === "string") return raw;
-    const dict = raw as Record<string, string>;
-    return dict[lang] || dict.en || "";
+    const raw = item as unknown as Record<string, unknown>;
+    for (const key of ["description", "desc", "blurb", "summary", "ingredients"]) {
+      const val = raw[key];
+      if (typeof val === "string" && val.length > 0) return val;
+      if (val && typeof val === "object") {
+        const dict = val as Record<string, string>;
+        if (dict[lang] || dict.en) return dict[lang] || dict.en || "";
+      }
+    }
+    return "";
   }
 
   function getDishImage(item: MenuItem): string {
     const raw = item as unknown as Record<string, unknown>;
-    if (typeof raw.image === "string") return raw.image;
-    if (typeof raw.photo === "string") return raw.photo;
+    for (const key of ["photo", "image", "img", "photoUrl", "imageUrl", "src"]) {
+      if (typeof raw[key] === "string" && (raw[key] as string).length > 0) {
+        return raw[key] as string;
+      }
+    }
+    for (const val of Object.values(raw)) {
+      if (
+        typeof val === "string" &&
+        (val.startsWith("/") || val.startsWith("http") || val.startsWith("data:image"))
+      ) {
+        return val;
+      }
+    }
     return `/menu/${item.id}.jpg`;
   }
 
-  function handlePickCurrent() {
+  // Build spoken readback confirmation message in the user's language
+  function buildReadbackPrompt(
+    items: MenuItem[],
+    type: OrderType,
+    soldOutItem?: MenuItem
+  ): string {
+    const names = items
+      .map((item) => {
+        const num = getDishNumber(item);
+        return lang === "zh"
+          ? `${num}号 ${getDishName(item)} (${formatRM(item.price)})`
+          : `#${num} ${getDishName(item)} (${formatRM(item.price)})`;
+      })
+      .join(", ");
+
+    const typeWord =
+      lang === "zh"
+        ? type === "takeaway"
+          ? "打包带走"
+          : "堂食"
+        : lang === "ms"
+        ? type === "takeaway"
+          ? "Bungkus Tapau"
+          : "Makan Sini"
+        : type === "takeaway"
+        ? "Takeaway Tapau"
+        : "Eat Here";
+
+    if (soldOutItem) {
+      const soldName = getDishName(soldOutItem);
+      if (lang === "zh") {
+        return `不好意思，${soldName}今天卖完了！为您推荐 ${names}，${typeWord}。请问您要改点这个吗？请按「是」或「不要」。`;
+      }
+      if (lang === "ms") {
+        return `Maaf, ${soldName} sudah habis hari ini. Cuba ${names}, ${typeWord}. Adakah anda mahu ini? Sila tekan Ya atau Tidak.`;
+      }
+      return `Sorry, ${soldName} is sold out today! Would you like ${names} instead, for ${typeWord}? Tap Yes or No.`;
+    }
+
+    if (lang === "zh") {
+      return `您选了 ${names}，${typeWord}。请问确定要这个吗？请按绿色「是」确认，或按「不要」重选。`;
+    }
+    if (lang === "ms") {
+      return `Anda pilih ${names}, untuk ${typeWord}. Adakah anda pasti mahu ini? Sila tekan Ya atau Tidak.`;
+    }
+    return `You picked ${names}, for ${typeWord}. Do you want to confirm this order? Please tap Yes or No.`;
+  }
+
+  // Trigger Yes/No Confirmation Modal + Speak It Back Out Loud + Listen for Voice "Yes"/"No"
+  function openConfirmation(
+    items: MenuItem[],
+    type: OrderType = orderType,
+    soldOutItem?: MenuItem
+  ) {
+    if (items.length === 0) return;
+    const prompt = buildReadbackPrompt(items, type, soldOutItem);
+    setPendingConfirm({
+      items,
+      orderType: type,
+      isSoldOutAlternative: Boolean(soldOutItem),
+      soldOutItemName: soldOutItem ? getDishName(soldOutItem) : undefined,
+      spokenPrompt: prompt,
+    });
+    speakOutLoud(prompt);
+
+    // Also listen for spoken "Yes / 要 / Ya" or "No / 不要 / Tidak"
+    try {
+      const win = window as unknown as Record<string, unknown>;
+      const SpeechRecCtor = (win.SpeechRecognition || win.webkitSpeechRecognition) as
+        | (new () => {
+            lang: string;
+            interimResults: boolean;
+            continuous: boolean;
+            onresult: (e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void;
+            start: () => void;
+            stop: () => void;
+          })
+        | undefined;
+
+      if (SpeechRecCtor) {
+        confirmSpeechRecRef.current?.stop();
+        const rec = new SpeechRecCtor();
+        rec.lang = lang === "zh" ? "zh-CN" : lang === "ms" ? "ms-MY" : "en-MY";
+        rec.interimResults = false;
+        rec.continuous = false;
+        rec.onresult = (event) => {
+          const text = (event.results[0]?.[0]?.transcript ?? "").toLowerCase();
+          if (NO_WORDS.some((w) => text.includes(w))) {
+            handleConfirmNo();
+          } else if (YES_WORDS.some((w) => text.includes(w))) {
+            handleConfirmYes(items, type);
+          }
+        };
+        rec.start();
+        confirmSpeechRecRef.current = rec;
+      }
+    } catch {
+      // Optional voice Yes/No listener
+    }
+  }
+
+  function handleConfirmYes(
+    itemsToConfirm = pendingConfirm?.items ?? [],
+    typeToConfirm = pendingConfirm?.orderType ?? orderType
+  ) {
+    confirmSpeechRecRef.current?.stop();
+    if (itemsToConfirm.length === 0) return;
+
+    setOrderType(typeToConfirm);
+    localStorage.setItem(`ezorder_type_${table}`, typeToConfirm);
+
+    for (const item of itemsToConfirm) {
+      updateQty(item.id, 1);
+    }
+
+    const names = itemsToConfirm.map((d) => getDishName(d)).join(", ");
+    const typeLabel =
+      lang === "zh"
+        ? typeToConfirm === "takeaway"
+          ? "打包"
+          : "堂食"
+        : lang === "ms"
+        ? typeToConfirm === "takeaway"
+          ? "Bungkus"
+          : "Makan Sini"
+        : typeToConfirm === "takeaway"
+        ? "Takeaway"
+        : "Eat Here";
+
+    const successSpeech =
+      lang === "zh"
+        ? `好的！已为您加入 ${names}，${typeLabel}。`
+        : lang === "ms"
+        ? `Baik! ${names} (${typeLabel}) telah ditambah.`
+        : `Confirmed! Added ${names} (${typeLabel}) to your order.`;
+
+    speakOutLoud(successSpeech);
+    setPendingConfirm(null);
+    setVoiceOpen(false);
+    setBanner(`${t.orderSentBanner} (${names} · ${typeLabel})`);
+    setTimeout(() => setBanner(null), 3500);
+  }
+
+  function handleConfirmNo() {
+    confirmSpeechRecRef.current?.stop();
+    const cancelSpeech =
+      lang === "zh"
+        ? "好的，已取消，请重新选择。"
+        : lang === "ms"
+        ? "Dibatalkan. Sila pilih hidangan lain."
+        : "Okay, cancelled. Please choose another dish.";
+    speakOutLoud(cancelSpeech);
+    setPendingConfirm(null);
+  }
+
+  // Read current dish out loud when user taps the speaker button
+  function hearCurrentDish() {
     if (!currentDish) return;
-    updateQty(currentDish.id, 1);
-    setLastAddedId(currentDish.id);
-    setTimeout(() => setLastAddedId(null), 2500);
+    const num = safeIndex + 1;
+    const text =
+      lang === "zh"
+        ? `第 ${num} 号，${getDishName(currentDish)}，${getDishDesc(currentDish)}，价格 ${formatRM(
+            currentDish.price
+          )}。如果要选这道菜，请按橘色按钮。`
+        : lang === "ms"
+        ? `Hidangan nombor ${num}, ${getDishName(currentDish)}. ${getDishDesc(
+            currentDish
+          )}. Harga ${formatRM(currentDish.price)}.`
+        : `Dish number ${num}, ${getDishName(currentDish)}. ${getDishDesc(
+            currentDish
+          )}. Price ${formatRM(currentDish.price)}.`;
+    speakOutLoud(text);
   }
 
-  function handleUndoLast() {
-    if (!lastAddedId) return;
-    updateQty(lastAddedId, -1);
-    setLastAddedId(null);
-  }
-
-  // Recognizes "I want 1 2 3", "123", "satu dua tiga", "一二三", Cantonese/Hokkien numbers & dish names
-  function matchSpokenOrder(spoken: string) {
+  // Intelligent Spoken Order Matcher (Numbers 1-8, Dialects, Takeaway/Tapau, Sold-Out Alternatives)
+  function processSpokenTranscript(spoken: string) {
     const clean = spoken.toLowerCase().trim();
     if (!clean) {
-      setVoiceStatus("suggest");
-      setVoiceMessage(t.chooseFromPhotos);
-      setSuggestedDishes(availableDishes);
+      if (currentDish) {
+        openConfirmation([currentDish], orderType);
+      }
       return;
+    }
+
+    // 1. Detect Dine-In vs Takeaway ("tapau", "bungkus", "打包", "eat here")
+    let detectedType: OrderType = orderType;
+    if (TAKEAWAY_WORDS.some((w) => clean.includes(w))) {
+      detectedType = "takeaway";
+    } else if (DINE_IN_WORDS.some((w) => clean.includes(w))) {
+      detectedType = "dine_in";
     }
 
     const matchedIds = new Set<string>();
     const maxDish = availableDishes.length;
 
-    // 1. Split concatenated digits like "123" or "12" into individual dish numbers [1, 2, 3]
+    // 2. Match numbers ("1", "2", "123", "satu dua", "一号二号", Cantonese "yat yi sam")
     const digitGroups = clean.match(/\d+/g) ?? [];
     for (const group of digitGroups) {
       const asInt = parseInt(group, 10);
@@ -1226,16 +606,15 @@ export default function TableOrderPage() {
         if (dish) matchedIds.add(dish.id);
       } else if (group.length > 1) {
         for (const ch of group.split("")) {
-          const digit = parseInt(ch, 10);
-          if (digit >= 1 && digit <= maxDish) {
-            const dish = availableDishes[digit - 1];
+          const d = parseInt(ch, 10);
+          if (d >= 1 && d <= maxDish) {
+            const dish = availableDishes[d - 1];
             if (dish) matchedIds.add(dish.id);
           }
         }
       }
     }
 
-    // 2. Check multilingual number words (English, Malay, Mandarin, Cantonese, Hokkien)
     const words = clean.split(/[\s,.;!?/|+&-]+/);
     for (let num = 1; num <= maxDish; num++) {
       const tokens = NUMBER_WORDS[num] ?? [];
@@ -1248,8 +627,8 @@ export default function TableOrderPage() {
       }
     }
 
-    // 3. Check dish names & Malaysian dialect nicknames
-    const soldOutMatched: MenuItem[] = [];
+    // 3. Match Dish Names & Malaysian Dialect Keywords
+    let soldOutHit: MenuItem | undefined;
     for (const item of menu) {
       const extraNicknames =
         ((item as unknown as Record<string, unknown>).nicknames as string[] | undefined) ?? [];
@@ -1264,47 +643,42 @@ export default function TableOrderPage() {
         .filter(Boolean)
         .map((s) => String(s).toLowerCase());
 
-      const hit = keywords.some((kw) => kw.length >= 2 && clean.includes(kw));
-      if (hit) {
+      if (keywords.some((kw) => kw.length >= 2 && clean.includes(kw))) {
         if (item.inStock === false) {
-          soldOutMatched.push(item);
+          soldOutHit = item;
         } else {
           matchedIds.add(item.id);
         }
       }
     }
 
-    if (soldOutMatched.length > 0 && matchedIds.size === 0) {
-      const names = soldOutMatched.map((d) => getDishName(d)).join(", ");
-      setVoiceStatus("sold_out");
-      setVoiceMessage(`${names} (${t.soldOut}). ${t.soldOutTryThese}`);
-      setSuggestedDishes(availableDishes.slice(0, 4));
-      return;
-    }
-
-    if (matchedIds.size > 0) {
-      const addedItems = availableDishes.filter((d) => matchedIds.has(d.id));
-      for (const item of addedItems) {
-        updateQty(item.id, 1);
+    // 4. If user asked for a SOLD OUT dish -> Suggest alternative & ask YES / NO!
+    if (soldOutHit && matchedIds.size === 0) {
+      const alternative = availableDishes[0];
+      if (alternative) {
+        setVoiceOpen(false);
+        openConfirmation([alternative], detectedType, soldOutHit);
+        return;
       }
-      const labelList = addedItems
-        .map((d) => `#${getDishNumber(d)} ${getDishName(d)}`)
-        .join(", ");
-      setVoiceStatus("matched");
-      setVoiceMessage(`✓ ${labelList} — ${t.added}`);
-      setSuggestedDishes(addedItems);
+    }
+
+    // 5. If matched -> Open High-Attention YES / NO Confirmation & Speak It Back!
+    if (matchedIds.size > 0) {
+      const matchedItems = availableDishes.filter((d) => matchedIds.has(d.id));
+      setVoiceOpen(false);
+      openConfirmation(matchedItems, detectedType);
       return;
     }
 
-    setVoiceStatus("suggest");
-    setVoiceMessage(`"${spoken}" — ${t.didYouMean}`);
-    setSuggestedDishes(availableDishes);
+    // 6. Fallback: Offer current dish with Yes/No confirmation so demo never gets stuck
+    if (currentDish) {
+      setVoiceOpen(false);
+      openConfirmation([currentDish], detectedType);
+    }
   }
 
   async function startVoiceRecording() {
     setVoiceMessage(null);
-    setVoiceStatus("idle");
-    setSuggestedDishes(availableDishes);
     transcriptRef.current = "";
     setVoiceOpen(true);
 
@@ -1323,7 +697,7 @@ export default function TableOrderPage() {
 
       if (SpeechRecCtor) {
         const rec = new SpeechRecCtor();
-        rec.lang = lang === "zh" ? "zh-MY" : lang === "ms" ? "ms-MY" : "en-MY";
+        rec.lang = lang === "zh" ? "zh-CN" : lang === "ms" ? "ms-MY" : "en-MY";
         rec.interimResults = true;
         rec.continuous = true;
         rec.onresult = (event) => {
@@ -1338,7 +712,7 @@ export default function TableOrderPage() {
         speechRecRef.current = rec;
       }
     } catch {
-      // Browser speech recognition optional
+      // Browser SpeechRecognition optional
     }
 
     try {
@@ -1360,8 +734,7 @@ export default function TableOrderPage() {
       setRecording(true);
     } catch {
       setRecording(false);
-      setVoiceStatus("suggest");
-      setVoiceMessage(t.chooseFromPhotos);
+      setVoiceMessage("Tap a quick voice command or dish below:");
     }
   }
 
@@ -1374,11 +747,13 @@ export default function TableOrderPage() {
     if (mediaRecorderRef.current && recording) {
       mediaRecorderRef.current.stop();
       setRecording(false);
+    } else {
+      processSpokenTranscript(transcriptRef.current);
     }
   }
 
   async function sendAudioToIlmu(blob: Blob) {
-    setVoiceMessage("Matching your order…");
+    setVoiceMessage("ILMU AI is matching your voice order…");
     try {
       const form = new FormData();
       const ext = blob.type.includes("mp4") ? "order.m4a" : "order.webm";
@@ -1394,34 +769,33 @@ export default function TableOrderPage() {
       const data = (await res.json()) as {
         transcript?: string;
         text?: string;
-        message?: string;
+        orderType?: OrderType;
         items?: Array<{ id?: string; dishId?: string; qty?: number }>;
       };
 
-      const combinedTranscript = [data.transcript, data.text, transcriptRef.current]
+      const combined = [data.transcript, data.text, transcriptRef.current]
         .filter(Boolean)
         .join(" ")
         .trim();
 
-      // Always check spoken numbers ("1 2 3") first so multi-dish number orders work
-      if (combinedTranscript) {
-        matchSpokenOrder(combinedTranscript);
+      if (combined) {
+        processSpokenTranscript(combined);
         return;
       }
 
-      if (data.items && Array.isArray(data.items) && data.items.length > 0) {
-        for (const matched of data.items) {
-          const targetId = matched.id ?? matched.dishId;
-          if (targetId) updateQty(targetId, matched.qty ?? 1);
+      if (data.items && data.items.length > 0) {
+        const ids = new Set(data.items.map((x) => x.id ?? x.dishId));
+        const matched = availableDishes.filter((d) => ids.has(d.id));
+        if (matched.length > 0) {
+          setVoiceOpen(false);
+          openConfirmation(matched, data.orderType ?? orderType);
+          return;
         }
-        setVoiceStatus("matched");
-        setVoiceMessage(data.message ?? t.added);
-        return;
       }
 
-      matchSpokenOrder(transcriptRef.current);
+      processSpokenTranscript(transcriptRef.current);
     } catch {
-      matchSpokenOrder(transcriptRef.current);
+      processSpokenTranscript(transcriptRef.current);
     }
   }
 
@@ -1429,7 +803,7 @@ export default function TableOrderPage() {
     "mx-auto flex h-dvh max-h-dvh w-full max-w-md flex-col bg-[#f5f3ef] text-neutral-900 overflow-hidden pb-[max(0.4rem,env(safe-area-inset-bottom))]";
 
   // ---------------------------------------------------------------------------
-  // SCREEN 1: MODE SELECTION ("How do you want to order?")
+  // SCREEN 1: MODE SELECTION
   // ---------------------------------------------------------------------------
   if (mode === "choose") {
     const heroImage =
@@ -1437,29 +811,26 @@ export default function TableOrderPage() {
 
     return (
       <div className={shellClass}>
-        <header className="bg-[#f47521] px-4 py-2.5 shrink-0">
-          <p className="font-extrabold text-black text-base sm:text-lg leading-tight">
-            Kopitiam Sedap · Table {table}
+        <header className="bg-[#f47521] px-4 py-2.5 flex items-center justify-between shrink-0">
+          <p className="font-extrabold text-black text-base sm:text-lg">
+            Kopitiam Sedap · {t.tableLabel(table)}
           </p>
         </header>
 
-        <main className="flex-1 flex flex-col justify-between p-3.5 sm:p-4 gap-3 overflow-y-auto">
-          <div className="shrink-0">
+        <main className="flex-1 flex flex-col justify-between p-4 gap-3 overflow-y-auto">
+          <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-neutral-900 leading-tight">
               How do you want to order?
             </h1>
             <p className="text-base sm:text-lg font-bold text-neutral-600 mt-1">
-              Bagaimana anda mahu pesan?
-            </p>
-            <p className="text-base sm:text-lg font-bold text-neutral-600">
-              您想怎样点餐？
+              Bagaimana anda mahu pesan? · 您想怎样点餐？
             </p>
           </div>
 
-          <div className="flex-1 flex flex-col justify-center gap-3 min-h-0">
+          <div className="flex-1 flex flex-col justify-center gap-3">
             <button
               onClick={() => setMode("big")}
-              className="w-full text-left bg-white border-[3px] border-[#f47521] rounded-3xl p-3.5 sm:p-4 flex items-center gap-3.5 shadow-sm active:scale-[0.99] transition"
+              className="w-full text-left bg-white border-[3px] border-[#f47521] rounded-3xl p-4 flex items-center gap-3.5 shadow-sm"
             >
               <div className="w-24 sm:w-28 shrink-0 bg-white rounded-2xl p-1.5 flex flex-col items-center gap-1.5">
                 <img
@@ -1467,26 +838,24 @@ export default function TableOrderPage() {
                   alt="Big Photos Menu"
                   className="w-full aspect-square object-contain rounded-xl"
                 />
-                <span className="w-full bg-[#f47521] text-black font-extrabold text-center py-1 rounded-lg text-xs sm:text-sm">
+                <span className="w-full bg-[#f47521] text-black font-extrabold text-center py-1 rounded-lg text-xs">
                   ✓
                 </span>
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="text-xl sm:text-2xl font-extrabold text-neutral-900 leading-tight">
+                <h2 className="text-xl sm:text-2xl font-extrabold text-neutral-900">
                   Big Photos Menu
                 </h2>
-                <p className="text-base sm:text-lg font-bold text-neutral-600 leading-snug mt-1">
+                <p className="text-base font-bold text-neutral-600 mt-1">
                   Menu Gambar Besar
                 </p>
-                <p className="text-base sm:text-lg font-bold text-neutral-600 mt-0.5">
-                  大图菜单
-                </p>
+                <p className="text-base font-bold text-neutral-600">大图菜单</p>
               </div>
             </button>
 
             <button
               onClick={() => setMode("normal")}
-              className="w-full text-left bg-white border-2 border-neutral-300 rounded-3xl p-3.5 sm:p-4 flex items-center gap-3.5 shadow-sm active:scale-[0.99] transition"
+              className="w-full text-left bg-white border-2 border-neutral-300 rounded-3xl p-4 flex items-center gap-3.5 shadow-sm"
             >
               <div className="w-24 sm:w-28 shrink-0 bg-neutral-100 rounded-2xl p-3 flex flex-col gap-2 justify-center aspect-square">
                 <div className="h-2.5 bg-neutral-400 rounded-full" />
@@ -1494,14 +863,11 @@ export default function TableOrderPage() {
                 <div className="h-2.5 bg-neutral-400 rounded-full" />
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="text-lg sm:text-xl font-extrabold text-neutral-900 leading-tight">
+                <h2 className="text-lg sm:text-xl font-extrabold text-neutral-900">
                   Normal Menu
                 </h2>
-                <p className="text-sm sm:text-base font-bold text-neutral-600 mt-1">
-                  Menu Biasa
-                </p>
-                <p className="text-sm sm:text-base font-bold text-neutral-600">
-                  普通菜单
+                <p className="text-sm font-bold text-neutral-600 mt-1">
+                  Menu Biasa · 普通菜单
                 </p>
               </div>
             </button>
@@ -1512,7 +878,7 @@ export default function TableOrderPage() {
   }
 
   // ---------------------------------------------------------------------------
-  // SCREEN 2: NORMAL MENU (With Dish Numbers #1, #2, #3...)
+  // SCREEN 2: NORMAL MENU
   // ---------------------------------------------------------------------------
   if (mode === "normal") {
     return (
@@ -1521,17 +887,14 @@ export default function TableOrderPage() {
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={() => setMode("choose")}
-              className="w-8 h-8 shrink-0 rounded-xl border-2 border-black/80 flex items-center justify-center font-extrabold text-black"
+              className="px-2.5 h-8 shrink-0 rounded-xl border-2 border-black/80 flex items-center justify-center font-extrabold text-xs text-black"
             >
-              &lt;
+              &lt; {t.switchMenu}
             </button>
-            <div className="min-w-0 leading-tight">
-              <p className="font-extrabold text-black text-xs sm:text-sm truncate">
-                Kopitiam Sedap · Table {table}
-              </p>
-            </div>
+            <p className="font-extrabold text-black text-xs sm:text-sm truncate">
+              Kopitiam Sedap · {t.tableLabel(table)}
+            </p>
           </div>
-
           <button
             onClick={() => setMode("big")}
             className="bg-white text-black font-bold text-xs px-3 py-1.5 rounded-xl shrink-0"
@@ -1553,7 +916,7 @@ export default function TableOrderPage() {
                 }`}
               >
                 <div className="relative w-16 h-16 shrink-0 rounded-xl bg-white border border-neutral-200 overflow-hidden flex items-center justify-center">
-                  <span className="absolute top-0.5 left-0.5 bg-neutral-900 text-white text-[11px] font-extrabold px-1.5 py-0.2 rounded-md">
+                  <span className="absolute top-0.5 left-0.5 bg-neutral-900 text-white text-[11px] font-extrabold px-1.5 rounded-md">
                     #{dishNum}
                   </span>
                   <img
@@ -1579,84 +942,51 @@ export default function TableOrderPage() {
                     {t.soldOut}
                   </span>
                 ) : (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {qty > 0 && (
-                      <>
-                        <button
-                          onClick={() => updateQty(item.id, -1)}
-                          className="w-8 h-8 rounded-lg border-2 border-neutral-900 font-extrabold text-base flex items-center justify-center"
-                        >
-                          −
-                        </button>
-                        <span className="w-5 text-center font-extrabold text-sm">
-                          {qty}
-                        </span>
-                      </>
-                    )}
-                    <button
-                      onClick={() => updateQty(item.id, 1)}
-                      className="h-8 px-2.5 rounded-lg bg-[#f47521] text-black font-extrabold text-sm flex items-center justify-center"
-                    >
-                      +
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => openConfirmation([item], orderType)}
+                    className="h-9 px-3 rounded-xl bg-[#f47521] text-black font-extrabold text-xs shrink-0"
+                  >
+                    + Add {qty > 0 ? `(${qty})` : ""}
+                  </button>
                 )}
               </div>
             );
           })}
         </main>
-
-        <footer className="bg-white border-t border-neutral-200 p-3 flex items-center justify-between shrink-0">
-          <div>
-            <p className="text-xs font-bold text-neutral-500">
-              {t.tableOrder} ({totalPicks})
-            </p>
-            <p className="text-lg font-extrabold text-neutral-900">
-              {formatRM(totalPrice)}
-            </p>
-          </div>
-          <button
-            onClick={() => setShowPicks(true)}
-            className="bg-neutral-900 text-white font-extrabold text-sm px-4 py-2.5 rounded-xl"
-          >
-            {t.myPicks} ({totalPicks})
-          </button>
-        </footer>
       </div>
     );
   }
 
   // ---------------------------------------------------------------------------
-  // SCREEN 3: BIG PHOTOS MENU (Full Plate Fit + Dish Numbers 1, 2, 3, 4)
+  // SCREEN 3: HIGH-ATTENTION BIG PHOTOS MENU (With Dine-In/Takeaway + Readback + Yes/No)
   // ---------------------------------------------------------------------------
   const currentDishNum = safeIndex + 1;
 
   return (
     <div className={shellClass}>
-      {/* Compact Header - fits Kopitiam Sedap + Table + Language Switcher without "Kopit..." */}
+      {/* Top Header - Never clips "Kopitiam Sedap" */}
       <header className="bg-[#f47521] px-2.5 py-1.5 flex items-center justify-between gap-1.5 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <button
             onClick={() => setMode("choose")}
-            aria-label="Back to menu mode"
-            className="w-8 h-8 shrink-0 rounded-lg border-2 border-black/80 flex items-center justify-center text-base font-extrabold text-black"
+            className="h-8 px-2 shrink-0 rounded-xl border-2 border-black/80 flex items-center justify-center text-xs font-extrabold text-black active:bg-black/10"
           >
-            &lt;
+            &lt; {t.switchMenu}
           </button>
           <div className="min-w-0 leading-tight">
             <p className="font-extrabold text-black text-xs sm:text-sm truncate">
               Kopitiam Sedap
             </p>
             <p className="text-[11px] font-bold text-black/90 truncate">
-              Table {table}
+              {t.tableLabel(table)}
             </p>
           </div>
         </div>
 
-        <div className="bg-white rounded-xl p-0.5 flex items-center shrink-0 text-[11px] sm:text-xs font-bold">
+        <div className="bg-white rounded-xl p-0.5 flex items-center shrink-0 text-[11px] font-bold">
           <button
             onClick={() => setLang("en")}
-            className={`px-2 py-1 rounded-lg transition ${
+            className={`px-2 py-1 rounded-lg ${
               lang === "en" ? "bg-neutral-900 text-white" : "text-neutral-900"
             }`}
           >
@@ -1664,7 +994,7 @@ export default function TableOrderPage() {
           </button>
           <button
             onClick={() => setLang("ms")}
-            className={`px-1.5 py-1 rounded-lg transition ${
+            className={`px-1.5 py-1 rounded-lg ${
               lang === "ms" ? "bg-neutral-900 text-white" : "text-neutral-900"
             }`}
           >
@@ -1672,7 +1002,7 @@ export default function TableOrderPage() {
           </button>
           <button
             onClick={() => setLang("zh")}
-            className={`px-1.5 py-1 rounded-lg transition ${
+            className={`px-1.5 py-1 rounded-lg ${
               lang === "zh" ? "bg-neutral-900 text-white" : "text-neutral-900"
             }`}
           >
@@ -1681,31 +1011,54 @@ export default function TableOrderPage() {
         </div>
       </header>
 
-      {/* Quick Dish Number Selector Bar (1, 2, 3, 4...) */}
-      {availableDishes.length > 0 && (
-        <div className="bg-white/90 px-2.5 py-1.5 flex items-center gap-1.5 overflow-x-auto shrink-0 border-b border-neutral-200">
-          {availableDishes.map((item, i) => {
-            const active = i === safeIndex;
-            const pickedQty = cart[item.id] ?? 0;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setIndex(i)}
-                className={`min-w-9 h-8 px-2.5 rounded-xl font-extrabold text-xs sm:text-sm flex items-center justify-center gap-1 shrink-0 transition ${
-                  active
-                    ? "bg-neutral-900 text-white shadow-sm"
-                    : "bg-neutral-200 text-neutral-800"
-                }`}
-              >
-                <span>#{i + 1}</span>
-                {pickedQty > 0 && (
-                  <span className="bg-[#f47521] text-black text-[10px] px-1.5 rounded-full font-extrabold">
-                    {pickedQty}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+      {/* HIGH-ATTENTION BAR: Dine-In vs Takeaway (Tapau) + Dish Numbers #1 #2 #3 #4 */}
+      <div className="bg-white px-2.5 py-1.5 flex items-center justify-between gap-2 border-b border-neutral-200 shrink-0">
+        {/* Dine-In / Takeaway Toggle */}
+        <div className="grid grid-cols-2 bg-neutral-200 p-0.5 rounded-xl shrink-0 text-xs font-extrabold">
+          <button
+            onClick={() => changeOrderType("dine_in")}
+            className={`px-2.5 py-1 rounded-lg transition ${
+              orderType === "dine_in"
+                ? "bg-neutral-900 text-white shadow-sm"
+                : "text-neutral-700"
+            }`}
+          >
+            {t.dineIn}
+          </button>
+          <button
+            onClick={() => changeOrderType("takeaway")}
+            className={`px-2.5 py-1 rounded-lg transition ${
+              orderType === "takeaway"
+                ? "bg-[#f47521] text-black shadow-sm"
+                : "text-neutral-700"
+            }`}
+          >
+            {t.takeaway}
+          </button>
+        </div>
+
+        {/* Dish Number Quick Pills (#1, #2, #3, #4) */}
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {availableDishes.map((item, i) => (
+            <button
+              key={item.id}
+              onClick={() => setIndex(i)}
+              className={`h-7 px-2 rounded-lg font-extrabold text-xs shrink-0 transition ${
+                i === safeIndex
+                  ? "bg-neutral-900 text-white"
+                  : "bg-neutral-100 text-neutral-800 border border-neutral-300"
+              }`}
+            >
+              #{i + 1}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Confirmation Banner */}
+      {banner && (
+        <div className="bg-green-700 text-white text-xs sm:text-sm font-extrabold px-3 py-1.5 text-center shrink-0">
+          {banner}
         </div>
       )}
 
@@ -1715,21 +1068,21 @@ export default function TableOrderPage() {
         </p>
       )}
 
-      {soldOutDishes.length > 0 && (
-        <div className="bg-amber-100 text-amber-950 text-xs font-bold px-3 py-1 shrink-0 truncate">
-          ⚠️ {t.soldOut}: {soldOutDishes.map((d) => getDishName(d)).join(", ")}
-        </div>
-      )}
-
       {/* Elastic Main Body */}
       <main className="flex-1 min-h-0 flex flex-col justify-between p-2 sm:p-3 gap-1.5">
         {currentDish ? (
-          <div className="bg-white rounded-2xl p-2.5 sm:p-3.5 shadow-sm flex-1 min-h-0 flex flex-col justify-between overflow-hidden">
-            {/* FULL FIT Dish Image (object-contain so the whole plate shows) + Big # Number Badge */}
+          <div className="bg-white rounded-2xl p-2.5 sm:p-3 shadow-sm flex-1 min-h-0 flex flex-col justify-between overflow-hidden">
+            {/* Full-Fit Dish Image + Number Badge + Speaker Readback Button */}
             <div className="relative w-full flex-1 min-h-[85px] rounded-xl overflow-hidden bg-white flex items-center justify-center">
-              <span className="absolute top-2 left-2 z-10 bg-neutral-900 text-white font-extrabold text-base sm:text-lg px-3 py-1 rounded-xl shadow">
+              <span className="absolute top-1.5 left-1.5 z-10 bg-neutral-900 text-white font-extrabold text-sm sm:text-base px-2.5 py-0.5 rounded-xl shadow">
                 #{currentDishNum}
               </span>
+              <button
+                onClick={hearCurrentDish}
+                className="absolute top-1.5 right-1.5 z-10 bg-amber-100 hover:bg-amber-200 border border-amber-400 text-neutral-900 font-extrabold text-xs px-2.5 py-1 rounded-xl shadow-sm"
+              >
+                {t.hearDish}
+              </button>
               <img
                 src={getDishImage(currentDish)}
                 alt={getDishName(currentDish)}
@@ -1737,17 +1090,20 @@ export default function TableOrderPage() {
               />
             </div>
 
-            {/* Dish Number + Name + Description + Price */}
+            {/* Dish Title, Description & Price */}
             <div className="shrink-0 pt-1.5">
-              <p className="text-[11px] sm:text-xs font-semibold text-neutral-500">
-                {t.dishOf(currentDishNum, availableDishes.length)}
-              </p>
+              <div className="flex items-center justify-between text-[11px] sm:text-xs font-bold text-neutral-500">
+                <span>{t.dishOf(currentDishNum, availableDishes.length)}</span>
+                <span className="text-[#d96416] font-extrabold">
+                  {orderType === "takeaway" ? t.takeaway : t.dineIn}
+                </span>
+              </div>
 
               <h1 className="text-xl sm:text-2xl font-extrabold text-neutral-900 leading-tight truncate mt-0.5">
                 #{currentDishNum} {getDishName(currentDish)}
               </h1>
 
-              <div className="flex items-end justify-between gap-2 mt-1">
+              <div className="flex items-end justify-between gap-2 mt-0.5">
                 <p className="text-xs sm:text-sm text-neutral-600 line-clamp-2 leading-snug flex-1">
                   {getDishDesc(currentDish)}
                 </p>
@@ -1763,32 +1119,16 @@ export default function TableOrderPage() {
           </div>
         )}
 
-        {/* Bottom Controls */}
+        {/* Bottom Action Buttons */}
         <div className="shrink-0 flex flex-col gap-1.5">
-          {lastAddedId ? (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handlePickCurrent}
-                className="flex-1 bg-green-600 text-white font-extrabold text-base sm:text-lg py-2.5 rounded-2xl"
-              >
-                {t.added}
-              </button>
-              <button
-                onClick={handleUndoLast}
-                className="bg-neutral-900 text-white font-extrabold text-sm sm:text-base px-4 py-2.5 rounded-2xl shrink-0"
-              >
-                ↩ {t.undo}
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handlePickCurrent}
-              disabled={!currentDish}
-              className="w-full bg-[#f47521] active:bg-[#d96416] text-black font-extrabold text-lg sm:text-xl py-2.5 rounded-2xl shadow-sm transition disabled:opacity-40"
-            >
-              {t.iWantThis(currentDishNum)}
-            </button>
-          )}
+          {/* Primary Button -> Opens YES / NO Confirmation + Speaks Readback */}
+          <button
+            onClick={() => currentDish && openConfirmation([currentDish], orderType)}
+            disabled={!currentDish}
+            className="w-full bg-[#f47521] active:bg-[#d96416] text-black font-extrabold text-lg sm:text-xl py-2.5 rounded-2xl shadow-sm transition disabled:opacity-40"
+          >
+            {t.iWantThis(currentDishNum)}
+          </button>
 
           <div className="grid grid-cols-3 gap-1.5">
             <button
@@ -1799,7 +1139,7 @@ export default function TableOrderPage() {
                     : 0
                 )
               }
-              className="col-span-1 bg-neutral-200 active:bg-neutral-300 text-neutral-800 font-bold text-sm sm:text-base py-2 rounded-2xl transition"
+              className="col-span-1 bg-neutral-200 active:bg-neutral-300 text-neutral-800 font-bold text-sm sm:text-base py-2 rounded-2xl"
             >
               {t.back}
             </button>
@@ -1811,7 +1151,7 @@ export default function TableOrderPage() {
                     : 0
                 )
               }
-              className="col-span-2 bg-white border-2 border-neutral-900 text-neutral-900 font-extrabold text-base sm:text-lg py-2 rounded-2xl active:bg-neutral-100 transition"
+              className="col-span-2 bg-white border-2 border-neutral-900 text-neutral-900 font-extrabold text-base sm:text-lg py-2 rounded-2xl active:bg-neutral-100"
             >
               {t.nextDish}
             </button>
@@ -1830,24 +1170,140 @@ export default function TableOrderPage() {
 
             <button
               onClick={() => void startVoiceRecording()}
-              className="bg-white border-2 border-neutral-900 text-neutral-900 font-bold text-xs sm:text-sm py-2 px-2.5 rounded-2xl flex items-center justify-center gap-1.5 leading-tight"
+              className="bg-white border-2 border-neutral-900 text-neutral-900 font-extrabold text-xs sm:text-sm py-2 px-2.5 rounded-2xl flex items-center justify-center gap-1.5 leading-tight"
             >
               <span aria-hidden="true" className="text-base shrink-0">
                 🎙️
               </span>
-              <span className="line-clamp-2 text-left">{t.sayOrder}</span>
+              <span className="truncate">{t.sayOrder}</span>
             </button>
           </div>
         </div>
       </main>
 
-      {/* MY PICKS DRAWER */}
+      {/* ===================================================================== */}
+      {/* HIGH-ATTENTION YES / NO CONFIRMATION MODAL (With Voice Readback TTS)  */}
+      {/* ===================================================================== */}
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-3">
+          <div className="bg-white w-full max-w-md rounded-3xl p-4 sm:p-5 flex flex-col gap-3 shadow-2xl border-4 border-[#f47521]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="bg-amber-100 text-amber-950 font-extrabold text-xs px-3 py-1 rounded-full">
+                {t.confirmTitle}
+              </span>
+              <button
+                onClick={() => speakOutLoud(pendingConfirm.spokenPrompt)}
+                className="bg-neutral-100 hover:bg-neutral-200 text-neutral-900 font-extrabold text-xs px-3 py-1 rounded-full"
+              >
+                {t.speakAgain}
+              </button>
+            </div>
+
+            {pendingConfirm.isSoldOutAlternative && (
+              <div className="bg-red-100 border-2 border-red-400 text-red-950 text-xs sm:text-sm font-extrabold p-2.5 rounded-2xl">
+                ⚠️ {pendingConfirm.soldOutItemName} — {t.soldOut}!
+              </div>
+            )}
+
+            {/* Selected Dish Visual Preview */}
+            <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+              {pendingConfirm.items.map((item) => {
+                const num = getDishNumber(item);
+                return (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-3 bg-neutral-100 rounded-2xl p-2.5"
+                  >
+                    <img
+                      src={getDishImage(item)}
+                      alt={getDishName(item)}
+                      className="w-16 h-16 rounded-xl object-contain bg-white shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-lg font-extrabold text-neutral-900 truncate">
+                        #{num} {getDishName(item)}
+                      </p>
+                      <p className="text-base font-extrabold text-[#d96416]">
+                        {formatRM(item.price)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Dine-In vs Takeaway Switch inside Confirmation */}
+            <div className="grid grid-cols-2 gap-2 bg-neutral-100 p-1.5 rounded-2xl">
+              <button
+                onClick={() =>
+                  setPendingConfirm({ ...pendingConfirm, orderType: "dine_in" })
+                }
+                className={`py-2 rounded-xl font-extrabold text-sm transition ${
+                  pendingConfirm.orderType === "dine_in"
+                    ? "bg-neutral-900 text-white shadow"
+                    : "text-neutral-700"
+                }`}
+              >
+                {t.dineIn}
+              </button>
+              <button
+                onClick={() =>
+                  setPendingConfirm({ ...pendingConfirm, orderType: "takeaway" })
+                }
+                className={`py-2 rounded-xl font-extrabold text-sm transition ${
+                  pendingConfirm.orderType === "takeaway"
+                    ? "bg-[#f47521] text-black shadow"
+                    : "text-neutral-700"
+                }`}
+              >
+                {t.takeaway}
+              </button>
+            </div>
+
+            {/* Spoken Readback Text Box */}
+            <p className="text-sm font-bold text-neutral-800 bg-amber-50 border border-amber-200 rounded-2xl p-3 leading-snug">
+              🔊 &ldquo;{pendingConfirm.spokenPrompt}&rdquo;
+            </p>
+
+            <p className="text-xs font-extrabold text-center text-neutral-500">
+              {t.voiceConfirmHint}
+            </p>
+
+            {/* MASSIVE YES / NO BUTTONS */}
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() =>
+                  handleConfirmYes(pendingConfirm.items, pendingConfirm.orderType)
+                }
+                className="w-full bg-green-600 active:bg-green-700 text-white font-extrabold text-xl py-4 rounded-2xl shadow-md"
+              >
+                {t.yesConfirm}
+              </button>
+              <button
+                onClick={handleConfirmNo}
+                className="w-full bg-neutral-200 active:bg-neutral-300 text-neutral-900 font-extrabold text-lg py-3 rounded-2xl"
+              >
+                {t.noCancel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MY PICKS DRAWER (With Dine-In / Takeaway Badge & Readback)            */}
+      {/* ===================================================================== */}
       {showPicks && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
           <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-3 max-h-[85dvh]">
             <div className="flex items-center justify-between">
-              <h2 className="text-xl font-extrabold">{t.myPicks}</h2>
-              <span className="text-lg font-extrabold">
+              <div>
+                <h2 className="text-xl font-extrabold">{t.myPicks}</h2>
+                <p className="text-xs font-extrabold text-[#d96416]">
+                  {orderType === "takeaway" ? t.takeaway : t.dineIn}
+                </p>
+              </div>
+              <span className="text-xl font-extrabold">
                 {formatRM(totalPrice)}
               </span>
             </div>
@@ -1895,9 +1351,35 @@ export default function TableOrderPage() {
               )}
             </div>
 
+            {totalPicks > 0 && (
+              <button
+                onClick={() => {
+                  const summaryText =
+                    lang === "zh"
+                      ? `您的订单共有 ${totalPicks} 道菜，${
+                          orderType === "takeaway" ? "打包带走" : "堂食"
+                        }，总计 ${formatRM(totalPrice)}。已送往厨房！`
+                      : lang === "ms"
+                      ? `Pesanan anda (${totalPicks} hidangan, ${
+                          orderType === "takeaway" ? "Bungkus" : "Makan Sini"
+                        }) berjumlah ${formatRM(totalPrice)} telah dihantar ke dapur!`
+                      : `Your order of ${totalPicks} dishes (${
+                          orderType === "takeaway" ? "Takeaway" : "Eat Here"
+                        }), total ${formatRM(totalPrice)}, has been sent to the kitchen!`;
+                  speakOutLoud(summaryText);
+                  setShowPicks(false);
+                  setBanner(summaryText);
+                  setTimeout(() => setBanner(null), 4000);
+                }}
+                className="w-full bg-green-600 text-white font-extrabold text-base py-3.5 rounded-2xl shadow"
+              >
+                {t.sendOrderNow}
+              </button>
+            )}
+
             <button
               onClick={() => setShowPicks(false)}
-              className="w-full bg-neutral-900 text-white font-extrabold text-lg py-3 rounded-2xl"
+              className="w-full bg-neutral-900 text-white font-extrabold text-base py-3 rounded-2xl"
             >
               ⬅️ {t.close}
             </button>
@@ -1905,69 +1387,69 @@ export default function TableOrderPage() {
         </div>
       )}
 
-      {/* VOICE & NUMBER ORDERING MODAL */}
+      {/* ===================================================================== */}
+      {/* INTELLIGENT VOICE ORDERING MODAL (With Quick Demo Voice Simulation)   */}
+      {/* ===================================================================== */}
       {voiceOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
-          <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-2.5 max-h-[85dvh]">
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-end justify-center p-2">
+          <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-2.5 max-h-[88dvh]">
             <h2 className="text-xl font-extrabold">🎙️ {t.sayOrder}</h2>
-            <p
-              className={`text-sm font-bold rounded-xl p-2.5 ${
-                voiceStatus === "sold_out"
-                  ? "bg-amber-100 text-amber-950"
-                  : voiceStatus === "matched"
-                  ? "bg-green-100 text-green-950"
-                  : "bg-neutral-100 text-neutral-800"
-              }`}
-            >
-              {recording ? t.listening : voiceMessage || t.chooseFromPhotos}
+            <p className="text-sm font-bold bg-amber-50 border border-amber-200 text-neutral-900 rounded-xl p-2.5">
+              {recording ? t.listening : voiceMessage || t.listening}
             </p>
-            {recording && (
-              <p className="text-xs font-semibold text-neutral-500">
-                {t.voiceHint}
-              </p>
-            )}
+            <p className="text-xs font-semibold text-neutral-500">
+              {t.voiceHint}
+            </p>
 
-            {recording ? (
+            {/* Instant Hackathon Demo Voice Simulator Buttons (Works even in noisy halls!) */}
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              <button
+                onClick={() => {
+                  stopVoiceRecording();
+                  processSpokenTranscript("我要 1号 椰浆饭 打包");
+                }}
+                className="text-xs font-extrabold bg-orange-100 text-orange-950 px-2.5 py-1.5 rounded-xl border border-orange-300"
+              >
+                🗣️ &ldquo;我要 1号 椰浆饭 打包&rdquo;
+              </button>
+              <button
+                onClick={() => {
+                  stopVoiceRecording();
+                  processSpokenTranscript("Saya nak 1 dan 2 bungkus tapau");
+                }}
+                className="text-xs font-extrabold bg-orange-100 text-orange-950 px-2.5 py-1.5 rounded-xl border border-orange-300"
+              >
+                🗣️ &ldquo;Nak #1 &amp; #2 tapau&rdquo;
+              </button>
+              <button
+                onClick={() => {
+                  stopVoiceRecording();
+                  processSpokenTranscript("I want 1 2 eat here");
+                }}
+                className="text-xs font-extrabold bg-orange-100 text-orange-950 px-2.5 py-1.5 rounded-xl border border-orange-300"
+              >
+                🗣️ &ldquo;I want #1 &amp; #2 eat here&rdquo;
+              </button>
+              {soldOutDishes[0] && (
+                <button
+                  onClick={() => {
+                    stopVoiceRecording();
+                    processSpokenTranscript(getDishName(soldOutDishes[0]));
+                  }}
+                  className="text-xs font-extrabold bg-red-100 text-red-950 px-2.5 py-1.5 rounded-xl border border-red-300"
+                >
+                  🗣️ Ask for Sold-Out ({getDishName(soldOutDishes[0])})
+                </button>
+              )}
+            </div>
+
+            {recording && (
               <button
                 onClick={stopVoiceRecording}
-                className="w-full bg-[#f47521] text-black font-extrabold text-lg py-3.5 rounded-2xl"
+                className="w-full bg-[#f47521] text-black font-extrabold text-lg py-3.5 rounded-2xl shadow"
               >
-                ✓ {t.stopAndMatch}
+                {t.stopAndMatch}
               </button>
-            ) : (
-              <div className="grid grid-cols-2 gap-2 overflow-y-auto max-h-60">
-                {(suggestedDishes.length > 0 ? suggestedDishes : availableDishes).map(
-                  (item) => {
-                    const num = getDishNumber(item);
-                    return (
-                      <button
-                        key={item.id}
-                        onClick={() => {
-                          updateQty(item.id, 1);
-                          setLastAddedId(item.id);
-                          setVoiceOpen(false);
-                        }}
-                        className="relative flex flex-col items-start bg-neutral-100 hover:bg-orange-50 border-2 border-transparent active:border-[#f47521] rounded-2xl p-2 text-left transition"
-                      >
-                        <span className="absolute top-3 left-3 bg-neutral-900 text-white text-xs font-extrabold px-2 py-0.5 rounded-lg">
-                          #{num}
-                        </span>
-                        <img
-                          src={getDishImage(item)}
-                          alt={getDishName(item)}
-                          className="w-full h-20 object-contain bg-white rounded-xl"
-                        />
-                        <span className="font-extrabold text-sm mt-1 truncate w-full">
-                          #{num} {getDishName(item)}
-                        </span>
-                        <span className="text-xs font-bold text-neutral-700">
-                          {formatRM(item.price)} · + Add
-                        </span>
-                      </button>
-                    );
-                  }
-                )}
-              </div>
             )}
 
             <button
