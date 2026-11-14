@@ -299,12 +299,75 @@ export default function TableOrderPage({
     ? "flex h-full w-full flex-col bg-[#f5f3ef] text-neutral-900 overflow-hidden"
     : "mx-auto flex h-dvh max-h-dvh w-full max-w-md flex-col bg-[#f5f3ef] text-neutral-900 overflow-hidden pb-[max(0.5rem,env(safe-area-inset-bottom))]";
 
+  // Shared "My Picks" drawer so it works in both Normal and Big Photos views
+  const picksDrawer = showPicks ? (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
+      <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-3 max-h-[85dvh]">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-extrabold">{t.myPicks}</h2>
+          <span className="text-lg font-extrabold">{formatRM(totalPrice)}</span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col gap-2">
+          {totalPicks === 0 ? (
+            <p className="text-neutral-500 py-6 text-center font-semibold">
+              {t.emptyPicks}
+            </p>
+          ) : (
+            menu
+              .filter((item) => (cart[item.id] ?? 0) > 0)
+              .map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-2 bg-neutral-100 rounded-2xl p-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-extrabold text-base truncate">
+                      {getDishName(item)}
+                    </p>
+                    <p className="text-xs font-bold text-neutral-600">
+                      {formatRM(item.price)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => updateQty(item.id, -1)}
+                      className="w-10 h-10 rounded-xl bg-white border-2 border-neutral-900 font-extrabold text-lg"
+                    >
+                      −
+                    </button>
+                    <span className="w-6 text-center font-extrabold text-base">
+                      {cart[item.id]}
+                    </span>
+                    <button
+                      onClick={() => updateQty(item.id, 1)}
+                      className="w-10 h-10 rounded-xl bg-[#f47521] text-black font-extrabold text-lg"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              ))
+          )}
+        </div>
+
+        <button
+          onClick={() => setShowPicks(false)}
+          className="w-full bg-neutral-900 text-white font-extrabold text-lg py-3 rounded-2xl"
+        >
+          ⬅️ {t.close}
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   // ---------------------------------------------------------------------------
   // SCREEN 1: MODE SELECTION ("How do you want to order?")
   // ---------------------------------------------------------------------------
   if (mode === "choose") {
-    const heroImage =
-      availableDishes[0] ? getDishImage(availableDishes[0]) : "/menu/nasi-lemak.jpg";
+    const heroImage = availableDishes[0]
+      ? getDishImage(availableDishes[0])
+      : "/menu/nasi-lemak.jpg";
 
     return (
       <div className={shellClass}>
@@ -396,6 +459,7 @@ export default function TableOrderPage({
             {!initialMode && (
               <button
                 onClick={() => setMode("choose")}
+                aria-label="Back"
                 className="w-9 h-9 shrink-0 rounded-xl border-2 border-black/80 flex items-center justify-center font-extrabold text-black"
               >
                 &lt;
@@ -493,6 +557,8 @@ export default function TableOrderPage({
             {t.myPicks} ({totalPicks})
           </button>
         </footer>
+
+        {picksDrawer}
       </div>
     );
   }
@@ -502,37 +568,37 @@ export default function TableOrderPage({
   // ---------------------------------------------------------------------------
   return (
     <div className={shellClass}>
-      {/* Compact Responsive Header - never truncates "Kopitiam Sedap" on 320px+ */}
-      <header className="bg-[#f47521] px-2.5 py-2 flex items-center justify-between gap-1.5 shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+      {/* Merged Compact Header with EN / BM / 中文 Switcher */}
+      <header className="bg-[#f47521] px-3 py-2 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           {!initialMode && (
             <button
               onClick={() => setMode("choose")}
               aria-label="Back"
-              className="w-8 h-8 shrink-0 rounded-lg border-2 border-black/80 flex items-center justify-center text-base font-extrabold text-black"
+              className="w-8 h-8 shrink-0 rounded-lg border-2 border-black/80 flex items-center justify-center text-sm font-extrabold text-black"
             >
               &lt;
             </button>
           )}
-          <div className="min-w-0 leading-tight">
+          <div className="min-w-0 flex-1 leading-tight">
             <p className="font-extrabold text-black text-xs sm:text-sm truncate">
               Kopitiam Sedap
             </p>
-            <p className="text-[11px] sm:text-xs font-bold text-black/90 truncate">
+            <p className="text-[11px] font-bold text-black/90 truncate">
               Table {table}
             </p>
           </div>
         </div>
 
         {/* Compact Language Switcher */}
-        <div className="bg-white rounded-xl p-0.5 flex items-center shrink-0 text-[11px] sm:text-xs font-bold">
+        <div className="bg-white rounded-xl p-0.5 flex items-center shrink-0 text-[11px] font-bold">
           <button
             onClick={() => setLang("en")}
             className={`px-2 py-1 rounded-lg transition ${
               lang === "en" ? "bg-neutral-900 text-white" : "text-neutral-900"
             }`}
           >
-            English
+            EN
           </button>
           <button
             onClick={() => setLang("ms")}
@@ -540,7 +606,7 @@ export default function TableOrderPage({
               lang === "ms" ? "bg-neutral-900 text-white" : "text-neutral-900"
             }`}
           >
-            Melayu
+            BM
           </button>
           <button
             onClick={() => setLang("zh")}
@@ -654,69 +720,7 @@ export default function TableOrderPage({
         </div>
       </main>
 
-      {/* MY PICKS DRAWER (Allows easy + / - or removing accidental clicks) */}
-      {showPicks && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-end justify-center p-2">
-          <div className="bg-white w-full max-w-md rounded-3xl p-4 flex flex-col gap-3 max-h-[85dvh]">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-extrabold">{t.myPicks}</h2>
-              <span className="text-lg font-extrabold">
-                {formatRM(totalPrice)}
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto flex flex-col gap-2">
-              {totalPicks === 0 ? (
-                <p className="text-neutral-500 py-6 text-center font-semibold">
-                  {t.emptyPicks}
-                </p>
-              ) : (
-                menu
-                  .filter((item) => (cart[item.id] ?? 0) > 0)
-                  .map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center justify-between gap-2 bg-neutral-100 rounded-2xl p-2.5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="font-extrabold text-base truncate">
-                          {getDishName(item)}
-                        </p>
-                        <p className="text-xs font-bold text-neutral-600">
-                          {formatRM(item.price)}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          onClick={() => updateQty(item.id, -1)}
-                          className="w-10 h-10 rounded-xl bg-white border-2 border-neutral-900 font-extrabold text-lg"
-                        >
-                          −
-                        </button>
-                        <span className="w-6 text-center font-extrabold text-base">
-                          {cart[item.id]}
-                        </span>
-                        <button
-                          onClick={() => updateQty(item.id, 1)}
-                          className="w-10 h-10 rounded-xl bg-[#f47521] text-black font-extrabold text-lg"
-                        >
-                          +
-                        </button>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
-
-            <button
-              onClick={() => setShowPicks(false)}
-              className="w-full bg-neutral-900 text-white font-extrabold text-lg py-3 rounded-2xl"
-            >
-              ⬅️ {t.close}
-            </button>
-          </div>
-        </div>
-      )}
+      {picksDrawer}
 
       {/* VOICE ORDERING MODAL (With instant photo fallback so user is never stuck) */}
       {voiceOpen && (
