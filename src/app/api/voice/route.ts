@@ -1,160 +1,155 @@
-import { parseOrder, replacementsFor, suggestDishes } from "@/lib/match";
-import { IlmuError, ilmuConfigured, ilmuModels, transcribe, understand, type Understood } from "@/lib/server/ilmu";
-import { serverMenu } from "@/lib/server/menu";
+import { NextResponse } from "next/server";
 
-/*
-  POST /api/voice   multipart: "audio" (a short recording) or "text" (typed words)
-  -> { status, heard, items, soldOut, suggestions, message, engine }
-
-      status "match"     everything asked for is available -> items
-             "sold_out"  something has run out -> soldOut names it, suggestions replace it
-             "suggest"   nothing certain -> suggestions to tap instead
-
-  GET  /api/voice   -> { engine: "ilmu" | "browser" }   so the phone knows whether to record.
-
-  Fallback ladder, so a diner is never left with nothing:
-    ILMU speech + ILMU understanding
-    -> ILMU speech + the built-in word matcher       (if the understanding step fails)
-    -> 503 "use the phone"                           (if speech fails; the phone then listens itself)
-  Sold-out dishes are filtered out here, so one can never slip into a cart.
-*/
-
-export const runtime = "nodejs";
-export const maxDuration = 30;
-
-const MAX_AUDIO_BYTES = 2_000_000; // an 8-second phone clip is ~40 kB
-const MAX_TEXT = 300;
-
-// Best-effort limit per address, to stop one visitor burning the ILMU balance.
-// Resets when the server restarts; put a real limiter in front for production traffic.
-const hits = new Map<string, { n: number; since: number }>();
-const LIMIT = 20;
-const WINDOW_MS = 60_000;
-
-function tooMany(req: Request): boolean {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-  const now = Date.now();
-  const h = hits.get(ip);
-  if (!h || now - h.since > WINDOW_MS) {
-    hits.set(ip, { n: 1, since: now });
-    if (hits.size > 5000) hits.clear();
-    return false;
-  }
-  h.n++;
-  return h.n > LIMIT;
+interface MenuDishInput {
+  id: string;
+  number: number;
+  nameEn: string;
+  nameMs: string;
+  nameZh: string;
+  price: number;
+  inStock: boolean;
+  desc?: string;
 }
 
-/** Only our own pages may call this. Browsers always send Origin on a cross-site POST. */
-function sameOrigin(req: Request): boolean {
-  const origin = req.headers.get("origin");
-  if (!origin) return true;
-  try {
-    return new URL(origin).host === (req.headers.get("x-forwarded-host") ?? req.headers.get("host"));
-  } catch {
-    return false;
-  }
+interface IlmuMatchedItem {
+  id: string;
+  qty: number;
+  note?: string;
 }
 
-export async function GET() {
-  return Response.json({ engine: ilmuConfigured() ? "ilmu" : "browser" });
+interface IlmuStructuredReply {
+  intent: "order" | "sold_out" | "recommend" | "confirm_yes" | "confirm_no" | "clarify";
+  orderType: "dine_in" | "takeaway" | null;
+  items: IlmuMatchedItem[];
+  replyEn: string;
+  replyMs: string;
+  replyZh: string;
 }
 
 export async function POST(req: Request) {
-  if (!sameOrigin(req)) return Response.json({ error: "forbidden" }, { status: 403 });
-  if (tooMany(req)) return Response.json({ error: "rate_limited" }, { status: 429 });
+  const apiKey = process.env.ILMU_API_KEY?.trim();
+  const baseUrl = (process.env.ILMU_BASE_URL || "https://api.ilmu.ai/v1").replace(/\/+$/, "");
+  const asrModel = process.env.ILMU_ASR_MODEL || "ilmu-asr-v4.2";
+  const chatModel = process.env.ILMU_CHAT_MODEL || "ilmu-mini-v3.3";
 
-  let form: FormData;
   try {
-    form = await req.formData();
-  } catch {
-    return Response.json({ error: "Send multipart form data" }, { status: 400 });
-  }
-  const audio = form.get("audio");
-  const typed = form.get("text");
-  const clip = audio instanceof Blob && audio.size > 0 ? audio : null;
-  const text = typeof typed === "string" ? typed.trim().slice(0, MAX_TEXT) : "";
-  if (!clip && !text) return Response.json({ error: "Send audio or text" }, { status: 400 });
-  if (clip && clip.size > MAX_AUDIO_BYTES) return Response.json({ error: "Recording is too long" }, { status: 413 });
+    const formData = await req.formData();
+    const audio = formData.get("audio") as File | null;
+    const textInput = (formData.get("text") as string | null)?.trim() || "";
+    const lang = ((formData.get("lang") as string | null) || "zh") as "en" | "ms" | "zh";
+    const currentOrderType = ((formData.get("orderType") as string | null) || "dine_in") as
+      | "dine_in"
+      | "takeaway";
+    const menuJson = (formData.get("menu") as string | null) || "[]";
 
-  const menu = await serverMenu();
-  const useIlmu = ilmuConfigured();
-
-  // 1. Hear.
-  let heard = text;
-  if (clip) {
-    if (!useIlmu) return Response.json({ error: "voice_ai_off" }, { status: 503 });
+    let menu: MenuDishInput[] = [];
     try {
-      heard = await transcribe(clip, menu);
-    } catch (e) {
-      logFailure(e);
-      return Response.json({ error: "asr_failed" }, { status: 503 });
+      menu = JSON.parse(menuJson) as MenuDishInput[];
+    } catch {
+      menu = [];
     }
-    if (!heard) {
-      return Response.json({
-        status: "suggest",
-        heard: "",
-        items: [],
-        soldOut: [],
-        suggestions: [],
-        message: "",
-        engine: ilmuModels.asr,
+
+    let transcript = textInput;
+
+    // 1. Transcribe voice with YTL ILMU ASR if audio was sent and API key is present
+    if (!transcript && audio && apiKey) {
+      try {
+        const asrForm = new FormData();
+        asrForm.append("file", audio, audio.name || "order.webm");
+        asrForm.append("model", asrModel);
+
+        const asrRes = await fetch(`${baseUrl}/audio/transcriptions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: asrForm,
+        });
+
+        if (asrRes.ok) {
+          const asrData = (await asrRes.json()) as { text?: string; transcript?: string };
+          transcript = (asrData.text || asrData.transcript || "").trim();
+        }
+      } catch {
+        // Continue to chat or client transcript if ASR endpoint is unreachable
+      }
+    }
+
+    // 2. Ask YTL ILMU Chat Model to reason intelligently (not rigid!)
+    if (apiKey && transcript) {
+      const systemPrompt = `You are a warm, smart Malaysian Kopitiam waiter helping elderly Aunties & Uncles order food.
+Understand English, Bahasa Melayu, Mandarin, Cantonese, Hokkien, and Bahasa Rojak seamlessly.
+Here is today's live menu JSON:
+${JSON.stringify(menu)}
+
+Rules:
+- Match dishes by dish number (#1, #2...), name, dialect slang, or taste description (e.g., "not spicy", "rice", "drink", "noodles").
+- Extract quantities (default 1) and any special notes (e.g., "kurang manis", "no peanuts", "extra sambal", "kosong", "peng").
+- Detect orderType: "takeaway" if they say tapau/bungkus/打包/takeaway, "dine_in" if they say makan sini/堂食/eat here, or null to keep "${currentOrderType}".
+- If a requested dish has inStock=false, set intent="sold_out" and put 1-2 similar inStock=true dishes in "items" as recommendations.
+- If the user says yes/confirm/要/好/boleh/ya, set intent="confirm_yes". If no/cancel/不要/tak nak, set intent="confirm_no".
+- Keep replyEn, replyMs, and replyZh short, natural, polite, and end with a clear Yes/No question confirming the dish, special note, and dine-in/takeaway status.
+
+Respond ONLY in valid JSON matching this schema:
+{
+  "intent": "order" | "sold_out" | "recommend" | "confirm_yes" | "confirm_no" | "clarify",
+  "orderType": "dine_in" | "takeaway" | null,
+  "items": [{"id": "dish_id", "qty": 1, "note": "optional note"}],
+  "replyEn": "English readback + Yes/No question",
+  "replyMs": "Malay readback + Ya/Tidak question",
+  "replyZh": "Chinese readback + 要/不要 question"
+}`;
+
+      const chatRes = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: chatModel,
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: transcript },
+          ],
+        }),
       });
+
+      if (chatRes.ok) {
+        const chatData = (await chatRes.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const rawContent = chatData.choices?.[0]?.message?.content || "";
+        const parsed = JSON.parse(rawContent) as IlmuStructuredReply;
+
+        const localizedReply =
+          lang === "zh"
+            ? parsed.replyZh
+            : lang === "ms"
+            ? parsed.replyMs
+            : parsed.replyEn;
+
+        return NextResponse.json({
+          ok: true,
+          transcript,
+          ...parsed,
+          message: localizedReply,
+        });
+      }
     }
+
+    return NextResponse.json({
+      ok: true,
+      transcript,
+      items: [],
+    });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: err instanceof Error ? err.message : "Voice processing error",
+      },
+      { status: 200 }
+    );
   }
-
-  // 2. Understand.
-  let result: Understood | null = null;
-  let engine = clip ? ilmuModels.asr : "typed";
-  if (useIlmu) {
-    try {
-      result = await understand(heard, menu);
-      engine += `+${ilmuModels.chat}`;
-    } catch (e) {
-      logFailure(e);
-    }
-  }
-  // The built-in matcher steps in when ILMU is unavailable, or found nothing and did not say why.
-  if (!result || (result.items.length === 0 && result.status === "match")) {
-    const local = parseOrder(heard, menu);
-    if (local.length > 0) {
-      result = { status: "match", items: local, soldOut: [], suggestions: [], message: result?.message ?? "" };
-      engine += "+matcher";
-    }
-  }
-
-  // 3. A sold-out dish never reaches the cart, whichever engine matched it.
-  //    Three ways one can show up: the AI names it, the AI left it in items, or only the
-  //    word matcher heard it. The diner must be told in every case.
-  const stock = new Map(menu.map((m) => [m.id, m.inStock]));
-  const asked = result?.items ?? [];
-  const items = asked.filter((i) => stock.get(i.itemId));
-  const soldOut = [
-    ...new Set([
-      ...(result?.soldOut ?? []),
-      ...asked.filter((i) => !stock.get(i.itemId)).map((i) => i.itemId),
-      ...parseOrder(heard, menu)
-        .map((i) => i.itemId)
-        .filter((id) => stock.get(id) === false),
-    ]),
-  ];
-
-  // 4. What to offer instead: replacements for what ran out, or the closest guesses.
-  const suggestions = [
-    ...new Set([
-      ...(result?.suggestions ?? []),
-      ...replacementsFor(soldOut, menu),
-      ...(items.length === 0 && soldOut.length === 0 ? suggestDishes(heard, menu) : []),
-    ]),
-  ]
-    .filter((id) => !items.some((i) => i.itemId === id) && !soldOut.includes(id))
-    .slice(0, 4);
-
-  const status: Understood["status"] = soldOut.length > 0 ? "sold_out" : items.length > 0 ? "match" : "suggest";
-
-  return Response.json({ status, heard, items, soldOut, suggestions, message: result?.message ?? "", engine });
-}
-
-function logFailure(e: unknown) {
-  if (e instanceof IlmuError) console.error(`ILMU ${e.stage} failed: ${e.message}`);
-  else console.error("Voice order failed:", e instanceof Error ? e.message : e);
 }
