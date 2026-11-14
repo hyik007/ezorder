@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/*
+  FeedMe design tokens. Values are read from FeedMe's public design system package
+  (@feedmepos/ui-library: --fm-color-*, the fm-typo scale, fm-corner-radius), so these
+  screens sit inside FeedMe's ordering web app without looking foreign.
+
+  One deliberate difference: FeedMe orange with white text is only 2.6:1 contrast.
+  For elderly eyes every orange button here uses near-black text instead (6.5:1).
+*/
+@theme inline {
+  --color-primary: #ff7823;        /* --fm-color-primary */
+  --color-primary-press: #e86510;
+  --color-oats: #fbe5cb;           /* --fm-color-primary-oats */
+  --color-tabletop: #f2f2f7;       /* --fm-color-neutral-gray-100 */
+  --color-porcelain: #ffffff;      /* --fm-color-neutral-white */
+  --color-rule: #c7c7cc;           /* --fm-color-neutral-gray-200 */
+  --color-soft: #6b6b6b;           /* --fm-color-neutral-gray-400 */
+  --color-ink: #1c1c1e;            /* --fm-color-neutral-gray-500 */
+  --color-success: #1f7735;        /* --fm-color-system-green-400 */
+  --color-success-wash: #ebf9ee;   /* --fm-color-system-green-100 */
+  --color-glow: #ffbf66;           /* --fm-color-system-orange-200 */
+  --color-danger: #99231d;         /* --fm-color-system-red-400 */
+  --font-sans: "Inter Variable", Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", Roboto, system-ui, sans-serif;
+}
+
+/*
+  Screen-height breakpoints. Width breakpoints (sm, md…) cannot tell a tall phone from a short one,
+  and on phones the height decides whether the photo and the big buttons fit together.
+    short:  most phones once the browser's own bars take their share (≤ 760 px tall)
+    tiny:   small phones and phones held sideways (≤ 600 px tall)
+    flat:   phones held sideways: wide but very short, so the menu goes side by side
+*/
+@custom-variant short (@media (max-height: 760px));
+@custom-variant tiny (@media (max-height: 600px));
+@custom-variant flat (@media (orientation: landscape) and (max-height: 540px));
+
+html {
+  color-scheme: light;
+  /* Phones with rounded corners and a home bar: keep content inside the visible area. */
+  --safe-bottom: max(1rem, env(safe-area-inset-bottom));
+  --safe-top: env(safe-area-inset-top);
+}
+
+/* Stops iPhone Safari enlarging text on its own when the phone is turned sideways. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-tabletop);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Big, obvious focus ring for keyboard and switch users. */
+:focus-visible {
+  outline: 4px solid #007aff; /* --fm-color-system-blue-300 */
+  outline-offset: 3px;
+}
+
+button {
+  touch-action: manipulation; /* no double-tap zoom delay on big buttons */
+}
+
+@keyframes arrive {
+  from {
+    background-color: var(--color-glow);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+/* A pick that just landed from another phone glows, then settles. */
+.arrive {
+  animation: arrive 2.4s ease-out;
+}
+
+@keyframes stamp {
+  from {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.stamp {
+  animation: stamp 0.22s ease-out;
+}
+
+@keyframes hearing {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 120 35 / 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 28px rgb(255 120 35 / 0);
+  }
+}
+.hearing {
+  animation: hearing 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arrive,
+  .stamp,
+  .hearing {
+    animation: none;
+  }
+}
