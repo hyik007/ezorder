@@ -91,3 +91,48 @@ button {
     animation: none;
   }
 }
+
+/* === MOBILE & DEMO RESPONSIVE FIX === */
+@supports (height: 100dvh) {
+  .min-h-screen {
+    min-height: 100dvh !important;
+  }
+  .h-screen {
+    height: 100dvh !important;
+  }
+}
+
+/* Fix header crushing ("Kopit...") and price clipping ("RM 8.90") on phones & demo frames */
+@media (max-width: 640px), (max-height: 820px) {
+  header {
+    padding: 0.4rem 0.6rem !important;
+    gap: 0.35rem !important;
+  }
+
+  header button,
+  header a {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    font-size: 0.8rem !important;
+  }
+
+  /* Shrink the dish photo dynamically so "RM 8.90" is never cut off */
+  main img {
+    max-height: 20dvh !important;
+    width: 100% !important;
+    object-fit: cover !important;
+  }
+
+  /* Prevent white dish card from slicing off bottom price text */
+  main > div,
+  main article,
+  main section {
+    overflow: visible !important;
+  }
+
+  /* Slightly tighten button height so all 3 bottom rows fit inside mobile Chrome/Safari */
+  main button {
+    padding-top: 0.55rem !important;
+    padding-bottom: 0.55rem !important;
+  }
+}
