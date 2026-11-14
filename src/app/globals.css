@@ -92,7 +92,7 @@ button {
   }
 }
 
-/* === MOBILE & DEMO RESPONSIVE FIX === */
+/* === MOBILE, DEMO & FULL PLATE RESPONSIVE FIX === */
 @supports (height: 100dvh) {
   .min-h-screen {
     min-height: 100dvh !important;
@@ -102,25 +102,44 @@ button {
   }
 }
 
-/* Fix header crushing ("Kopit...") and price clipping ("RM 8.90") on phones & demo frames */
-@media (max-width: 640px), (max-height: 820px) {
+/* Override Next.js <Image> inline object-fit:cover so the WHOLE plate is visible */
+main img,
+main img[style],
+article img,
+article img[style] {
+  object-fit: contain !important;
+  background-color: var(--color-porcelain) !important;
+}
+
+/* Fix header crushing ("Kopit..."), price clipping ("RM 8.90"), and fit full plate on phones & demo frames */
+@media (max-width: 640px), (max-height: 860px) {
   header {
-    padding: 0.4rem 0.6rem !important;
-    gap: 0.35rem !important;
+    padding: 0.35rem 0.5rem !important;
+    gap: 0.25rem !important;
+  }
+
+  header p,
+  header span,
+  header h1 {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    font-size: 0.82rem !important;
   }
 
   header button,
   header a {
-    padding-left: 0.5rem !important;
-    padding-right: 0.5rem !important;
-    font-size: 0.8rem !important;
+    padding-left: 0.45rem !important;
+    padding-right: 0.45rem !important;
+    font-size: 0.75rem !important;
   }
 
-  /* Shrink the dish photo dynamically so "RM 8.90" is never cut off */
-  main img {
-    max-height: 20dvh !important;
+  /* Shrink & contain the dish photo dynamically so full plate is visible and "RM 8.90" is never cut off */
+  main img,
+  main img[style] {
+    max-height: 21dvh !important;
     width: 100% !important;
-    object-fit: cover !important;
+    object-fit: contain !important;
   }
 
   /* Prevent white dish card from slicing off bottom price text */
@@ -132,7 +151,7 @@ button {
 
   /* Slightly tighten button height so all 3 bottom rows fit inside mobile Chrome/Safari */
   main button {
-    padding-top: 0.55rem !important;
-    padding-bottom: 0.55rem !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
   }
 }
